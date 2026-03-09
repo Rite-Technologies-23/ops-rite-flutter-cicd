@@ -183,12 +183,8 @@ jobs:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
 
-      - name: Build APK (unsigned)
-        run: flutter build apk \
-              --release \
-              --no-tree-shake-icons \
-              --build-name=1.0.5 \
-              --build-number=1
+      - name: Build APK
+        run: flutter build apk --release --no-tree-shake-icons --build-name=${{ inputs.version_name }} --build-number=1
 
       - name: Build AAB
         run: |
