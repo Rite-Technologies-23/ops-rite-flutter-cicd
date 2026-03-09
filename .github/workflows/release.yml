@@ -195,7 +195,7 @@ jobs:
       - name: Download unsigned Android artifacts
         uses: actions/download-artifact@v4
         with:
-          name: android-debug-outputs
+          name: android-build
           path: release/android
 
       - name: Install Android build-tools (zipalign/apksigner)
