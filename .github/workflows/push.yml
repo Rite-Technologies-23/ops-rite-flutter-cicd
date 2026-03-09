@@ -188,10 +188,7 @@ jobs:
 
       - name: Build AAB
         run: |
-          flutter build appbundle \
-            --release \
-            --build-name=${{ inputs.version_name }} \
-            --build-number=1
+          flutter build appbundle --release --build-name=${{ inputs.version_name }} --build-number=1
 
       - name: Upload Android Outputs
         uses: actions/upload-artifact@v4
