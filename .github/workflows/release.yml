@@ -3,6 +3,16 @@ name: "Reusable Flutter CD"
 on:
   workflow_call:
     inputs:
+      flutter_version:
+        required: false
+        type: string
+        default: "3.32.0"
+
+      flutter_channel:
+        required: false
+        type: string
+        default: "stable"
+
       version:
         required: true
         type: string
@@ -268,8 +278,8 @@ jobs:
       - name: Setup Flutter
         uses: Darryl-Cardoza/flutter-reusable-repo/.github/actions/setup-flutter@main
         with:
-          flutter_version: 3.32.0
-          flutter_channel: stable
+          flutter_version: ${{ inputs.flutter_version}}
+          flutter_channel: ${{ inputs.flutter_channel}}
 
       - name: Flutter Pub Get
         run: flutter pub get
