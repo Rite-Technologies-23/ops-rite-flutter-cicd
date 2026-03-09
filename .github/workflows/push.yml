@@ -255,7 +255,8 @@ jobs:
   build_android:
     name: Build Android (DEBUG/RELEASE)
     runs-on: ubuntu-latest
-    needs: [dart_analyzer, run_tests]
+#    needs: [dart_analyzer, run_tests]
+    needs: [dart_analyzer]
 
     steps:
       - uses: actions/checkout@v4
@@ -293,7 +294,8 @@ jobs:
   build_ios:
     name: Build iOS (UNSIGNED Archive)
     runs-on: macos-latest
-    needs: [dart_analyzer, run_tests]
+#    needs: [dart_analyzer, run_tests]
+    needs: [dart_analyzer]
     if: ${{ inputs.build_ios }}
 
     steps:
