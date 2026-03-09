@@ -254,7 +254,7 @@ Because it is:
 
 ## 👨‍💻 Author
 
-Reusable Flutter CI/CD Pipeline
+**Rite Technologies - DevOps Competency**
 
 ---
 
