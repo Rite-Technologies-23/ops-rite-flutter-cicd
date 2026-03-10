@@ -6,7 +6,7 @@ on:
       flutter_version:
         required: false
         type: string
-        default: "3.32.0"
+        default: "3.35.5"
 
       flutter_channel:
         required: false
@@ -280,9 +280,6 @@ jobs:
         with:
           flutter_version: ${{ inputs.flutter_version}}
           flutter_channel: ${{ inputs.flutter_channel}}
-
-      - name: Flutter Pub Get
-        run: flutter pub get
 
       - name: Decode Android Keystore
         run: |

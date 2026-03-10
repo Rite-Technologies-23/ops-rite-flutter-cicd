@@ -5,9 +5,11 @@ inputs:
   flutter_version:
     required: true
     description: The version of Flutter to install
+    default: "3.35.5"
   flutter_channel:
     required: true
     description: The Flutter release channel to use
+    default: "stable"
 
 runs:
   using: "composite"
