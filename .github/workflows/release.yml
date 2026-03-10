@@ -101,6 +101,16 @@ on:
         type: string
         default: ''
 
+      android_runner:
+        required: false
+        type: string
+        default: ubuntu-latest
+
+      ios_runner:
+        required: false
+        type: string
+        default: macos-latest
+
     secrets:
       # AWS Secrets (optional)
       AWS_ACCESS_KEY_ID:
@@ -149,7 +159,7 @@ jobs:
   # CREATE GITHUB RELEASE
   create_release:
     name: Create GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.android_runner }}
     outputs:
       version: ${{ steps.version_check.outputs.version }}
 
@@ -199,7 +209,7 @@ jobs:
     name: Sign Android
     if: ${{ inputs.deploy_to_playstore || inputs.deploy_to_esper }}
     needs: create_release
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.android_runner }}
 
     steps:
       - name: Download unsigned Android artifacts
@@ -264,7 +274,7 @@ jobs:
     name: Deploy to Google Play Store
     if: ${{ inputs.deploy_to_playstore }}
     needs: sign_android
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.android_runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -337,7 +347,7 @@ jobs:
     name: Sign iOS & Export IPA
     if: ${{ inputs.deploy_to_testflight }}
     needs: create_release
-    runs-on: macos-latest
+    runs-on: ${{ inputs.ios_runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -490,7 +500,7 @@ jobs:
     name: Deploy to TestFlight
     if: ${{ inputs.deploy_to_testflight }}
     needs: sign_ios
-    runs-on: macos-latest
+    runs-on: ${{ inputs.ios_runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -591,7 +601,7 @@ jobs:
     name: Deploy to Esper
     if: ${{ inputs.deploy_to_esper }}
     needs: sign_android
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.android_runner }}
 
     steps:
       - name: Download signed APK
