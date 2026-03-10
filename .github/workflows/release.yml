@@ -583,19 +583,19 @@ jobs:
           # For internal testers, groups must exist in App Store Connect.
           #
           # If your group name is different, change "Internal" to your group name.
-          GROUP_NAME="Internal"
+          #GROUP_NAME="Internal"
 
           if [ -n "$CHANGELOG" ]; then
             fastlane pilot upload \
               --ipa "$IPA" \
               --api_key_path api_key.json \
-              --groups "$GROUP_NAME" \
+              --skip_waiting_for_build_processing true \
               --changelog "$CHANGELOG"
           else
             fastlane pilot upload \
               --ipa "$IPA" \
               --api_key_path api_key.json \
-              --groups "$GROUP_NAME"
+              --skip_waiting_for_build_processing true
           fi
 
 
