@@ -203,7 +203,7 @@ jobs:
   ############################################################
 
   build_ios:
-    name: Build iOS (UNSIGNED)
+    name: Build iOS (UNSIGNED ARCHIVE)
     runs-on: ${{ inputs.ios_runner }}
     needs: dart_analyzer
     if: ${{ inputs.build_ios }}
@@ -226,10 +226,32 @@ jobs:
 
       - name: Build iOS Archive
         run: |
+          set -e
+          
+          ARCHIVE_DIR="$RUNNER_TEMP/ios-archive"
+          ARCHIVE_PATH="$ARCHIVE_DIR/Runner.xcarchive"
+          
+          mkdir -p "$ARCHIVE_DIR"
+          
           flutter build ios --release --no-codesign
+          
+          cd ios
+          
+          xcodebuild \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -archivePath "$ARCHIVE_PATH" \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            archive
+          
+          cd ..
+          
+          test -d "$ARCHIVE_PATH"
 
       - name: Upload iOS Archive
         uses: actions/upload-artifact@v4
         with:
           name: ios-archive-unsigned
-          path: build/ios
+          path: ${{ runner.temp }}/ios-archive
