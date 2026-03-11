@@ -622,11 +622,12 @@ jobs:
           ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
           ESPER_ORG_ID: ${{ inputs.esper_org_id }}
           ESPER_APP_ID: ${{ inputs.esper_app_id }}
+          ESPER_TENANT: ${{ inputs.esper_tenant }}
         run: |
           set -e
 
-          if [ -z "$ESPER_ORG_ID" ] || [ -z "$ESPER_APP_ID" ]; then
-            echo "❌ esper_org_id and esper_app_id are required"
+          if [ -z "$ESPER_ORG_ID" ] || [ -z "$ESPER_APP_ID" ] || [ -z "$ESPER_TENANT" ]; then
+            echo "❌ esper_org_id, esper_app_id and esper_tenant are required"
             exit 1
           fi
 
@@ -638,11 +639,16 @@ jobs:
             exit 1
           fi
 
-          echo "Uploading $APK to Esper..."
+          echo "Uploading $APK to Esper tenant $ESPER_TENANT..."
+
+          API_URL="https://${ESPER_TENANT}.esper.cloud/api/v0/enterprise/${ESPER_ORG_ID}/apps/${ESPER_APP_ID}/versions/"
+
+          echo "API URL: $API_URL"
 
           HTTP_STATUS=$(curl -sS -L -w "%{http_code}" \
-            -X POST "https://api.esper.io/v0/enterprise/${ESPER_ORG_ID}/apps/${ESPER_APP_ID}/versions/" \
+            -X POST "$API_URL" \
             -H "Authorization: Bearer ${ESPER_API_KEY}" \
+            -H "Accept: application/json" \
             -F "apk=@${APK}" \
             -F "releaseNotes=CI build ${GITHUB_RUN_NUMBER}" \
             -F "versionName=${GITHUB_RUN_NUMBER}" \
@@ -659,4 +665,4 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Esper upload completed"
+          echo "✅ Esper upload successful"
