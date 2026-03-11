@@ -622,7 +622,6 @@ jobs:
           ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
           ESPER_ORG_ID: ${{ inputs.esper_org_id }}
           ESPER_APP_ID: ${{ inputs.esper_app_id }}
-          ESPER_TENANT: ${{ inputs.esper_tenant }}
         run: |
           set -e
 
@@ -639,11 +638,10 @@ jobs:
             exit 1
           fi
 
-          echo "Tenant: $ESPER_TENANT"
           echo "Uploading $APK to Esper..."
 
           HTTP_STATUS=$(curl -sS -L -w "%{http_code}" \
-            -X POST "https://${ESPER_TENANT}.esper.cloud/api/v0/enterprise/${ESPER_ORG_ID}/apps/${ESPER_APP_ID}/versions/" \
+            -X POST "https://api.esper.io/v0/enterprise/${ESPER_ORG_ID}/apps/${ESPER_APP_ID}/versions/" \
             -H "Authorization: Bearer ${ESPER_API_KEY}" \
             -F "apk=@${APK}" \
             -F "releaseNotes=CI build ${GITHUB_RUN_NUMBER}" \
@@ -653,7 +651,7 @@ jobs:
 
           echo "Esper response:"
           cat esper_response.json
-
+          echo ""
           echo "HTTP Status: $HTTP_STATUS"
 
           if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
@@ -661,4 +659,4 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Esper upload successful"
+          echo "✅ Esper upload completed"
