@@ -622,45 +622,33 @@ jobs:
           ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
           ESPER_ORG_ID: ${{ inputs.esper_org_id }}
           ESPER_APP_ID: ${{ inputs.esper_app_id }}
+          ESPER_TENANT: xpkcin
         run: |
           set -e
-
-          if [ -z "$ESPER_ORG_ID" ] || [ -z "$ESPER_APP_ID" ]; then
-            echo "❌ esper_org_id and esper_app_id are required"
-            exit 1
-          fi
 
           APK=$(find release/android -name "*.apk" | head -n 1)
 
           if [ -z "$APK" ]; then
             echo "❌ No signed APK found"
-            find release/android -maxdepth 6 -type f
             exit 1
           fi
 
-          echo "Uploading $APK to Esper..."
+          API_URL="https://${ESPER_TENANT}.esper.cloud/api/v0/enterprise/${ESPER_ORG_ID}/application/${ESPER_APP_ID}/version/"
 
-          API_URL="https://api.esper.io/api/v0/enterprise/${ESPER_ORG_ID}/apps/${ESPER_APP_ID}/versions/"
+          echo "Uploading $APK to Esper..."
+          echo "API URL: $API_URL"
 
           HTTP_STATUS=$(curl -sS -w "%{http_code}" \
             -X POST "$API_URL" \
             -H "Authorization: Bearer ${ESPER_API_KEY}" \
-            -H "Accept: application/json" \
-            -F "apk=@${APK}" \
-            -F "releaseNotes=CI build ${GITHUB_RUN_NUMBER}" \
-            -F "versionName=${GITHUB_RUN_NUMBER}" \
-            -F "versionCode=${GITHUB_RUN_NUMBER}" \
+            -F "file=@${APK}" \
+            -F "release_notes=CI build ${GITHUB_RUN_NUMBER}" \
             -o esper_response.json)
 
           echo "Esper response:"
           cat esper_response.json
           echo ""
           echo "HTTP Status: $HTTP_STATUS"
-
-          if grep -q "<html" esper_response.json; then
-            echo "❌ Console HTML returned instead of API response"
-            exit 1
-          fi
 
           if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
             echo "❌ Esper upload failed"
