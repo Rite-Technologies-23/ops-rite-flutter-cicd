@@ -621,7 +621,7 @@ jobs:
         env:
           ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
           ESPER_ORG_ID: ${{ inputs.esper_org_id }}
-          ESPER_TENANT: xpkcin
+          ESPER_TENANT: ${{ inputs.esper_tenant }}
         run: |
           set -e
 
