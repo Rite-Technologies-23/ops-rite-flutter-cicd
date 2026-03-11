@@ -622,12 +622,11 @@ jobs:
           ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
           ESPER_ORG_ID: ${{ inputs.esper_org_id }}
           ESPER_APP_ID: ${{ inputs.esper_app_id }}
-          ESPER_TENANT: ${{ inputs.esper_tenant }}
         run: |
           set -e
 
-          if [ -z "$ESPER_ORG_ID" ] || [ -z "$ESPER_APP_ID" ] || [ -z "$ESPER_TENANT" ]; then
-            echo "❌ esper_org_id, esper_app_id and esper_tenant are required"
+          if [ -z "$ESPER_ORG_ID" ] || [ -z "$ESPER_APP_ID" ]; then
+            echo "❌ esper_org_id and esper_app_id are required"
             exit 1
           fi
 
@@ -639,13 +638,11 @@ jobs:
             exit 1
           fi
 
-          echo "Uploading $APK to Esper tenant $ESPER_TENANT..."
+          echo "Uploading $APK to Esper..."
 
-          API_URL="https://${ESPER_TENANT}.esper.cloud/api/v0/enterprise/${ESPER_ORG_ID}/apps/${ESPER_APP_ID}/versions/"
+          API_URL="https://api.esper.io/api/v0/enterprise/${ESPER_ORG_ID}/apps/${ESPER_APP_ID}/versions/"
 
-          echo "API URL: $API_URL"
-
-          HTTP_STATUS=$(curl -sS -L -w "%{http_code}" \
+          HTTP_STATUS=$(curl -sS -w "%{http_code}" \
             -X POST "$API_URL" \
             -H "Authorization: Bearer ${ESPER_API_KEY}" \
             -H "Accept: application/json" \
@@ -659,6 +656,11 @@ jobs:
           cat esper_response.json
           echo ""
           echo "HTTP Status: $HTTP_STATUS"
+
+          if grep -q "<html" esper_response.json; then
+            echo "❌ Console HTML returned instead of API response"
+            exit 1
+          fi
 
           if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
             echo "❌ Esper upload failed"
