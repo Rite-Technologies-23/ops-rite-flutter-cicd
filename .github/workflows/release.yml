@@ -619,26 +619,38 @@ jobs:
           ESPER_APP_ID: ${{ inputs.esper_app_id }}
         run: |
           set -e
-
+          
           if [ -z "$ESPER_ORG_ID" ] || [ -z "$ESPER_APP_ID" ]; then
             echo "❌ esper_org_id and esper_app_id are required"
             exit 1
           fi
-
+          
           APK=$(find release/android -name "*.apk" | head -n 1)
           if [ -z "$APK" ]; then
             echo "❌ No signed APK found"
             find release/android -maxdepth 6 -type f
             exit 1
           fi
-
+          
           echo "✅ Uploading $APK to Esper..."
-
-          curl -sS -X POST "https://api.esper.io/v0/enterprise/${ESPER_ORG_ID}/apps/${ESPER_APP_ID}/versions/" \
+          
+          HTTP_STATUS=$(curl -sS -w "%{http_code}" \
+            -X POST "https://api.esper.io/v0/enterprise/${ESPER_ORG_ID}/apps/${ESPER_APP_ID}/versions/" \
             -H "Authorization: Bearer ${ESPER_API_KEY}" \
             -F "apk=@${APK}" \
             -F "releaseNotes=CI build $GITHUB_RUN_NUMBER" \
-            -o esper_response.json
-
+            -F "versionName=${GITHUB_RUN_NUMBER}" \
+            -F "versionCode=${GITHUB_RUN_NUMBER}" \
+            -o esper_response.json)
+          
           echo "Esper response:"
           cat esper_response.json
+          
+          echo "HTTP Status: $HTTP_STATUS"
+          
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
+            echo "❌ Esper upload failed"
+            exit 1
+          fi
+          
+          echo "✅ Esper upload successful"
