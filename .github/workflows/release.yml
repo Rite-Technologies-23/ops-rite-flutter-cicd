@@ -621,7 +621,6 @@ jobs:
         env:
           ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
           ESPER_ORG_ID: ${{ inputs.esper_org_id }}
-          ESPER_APP_ID: ${{ inputs.esper_app_id }}
           ESPER_TENANT: xpkcin
         run: |
           set -e
@@ -633,16 +632,16 @@ jobs:
             exit 1
           fi
 
-          API_URL="https://${ESPER_TENANT}.esper.cloud/api/v0/enterprise/${ESPER_ORG_ID}/application/${ESPER_APP_ID}/version/"
+          API_URL="https://${ESPER_TENANT}-api.esper.cloud/api/enterprise/${ESPER_ORG_ID}/application/upload/"
 
           echo "Uploading $APK to Esper..."
           echo "API URL: $API_URL"
 
-          HTTP_STATUS=$(curl -sS -w "%{http_code}" \
+          HTTP_STATUS=$(curl -L -sS -w "%{http_code}" \
             -X POST "$API_URL" \
             -H "Authorization: Bearer ${ESPER_API_KEY}" \
-            -F "file=@${APK}" \
-            -F "release_notes=CI build ${GITHUB_RUN_NUMBER}" \
+            -H "Accept: application/json" \
+            -F "app_file=@${APK}" \
             -o esper_response.json)
 
           echo "Esper response:"
