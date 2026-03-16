@@ -174,7 +174,7 @@ jobs:
       version: ${{ steps.version_check.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -287,10 +287,10 @@ jobs:
     runs-on: ${{ inputs.android_runner }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set Up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -360,7 +360,7 @@ jobs:
     runs-on: ${{ inputs.ios_runner }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download unsigned iOS archive
         uses: actions/download-artifact@v4
@@ -515,7 +515,7 @@ jobs:
     runs-on: ${{ inputs.ios_runner }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download signed IPA
         uses: actions/download-artifact@v4
