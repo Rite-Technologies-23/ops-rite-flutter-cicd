@@ -217,7 +217,7 @@ jobs:
   # SIGN ANDROID
   sign_android:
     name: Sign Android
-    if: ${{ inputs.deploy_to_playstore || inputs.deploy_to_esper }}
+    if: ${{ inputs.deploy_to_playstore || inputs.deploy_to_esper_android }}
     needs: create_release
     runs-on: ${{ inputs.android_runner }}
 
@@ -355,7 +355,7 @@ jobs:
   # SIGN iOS (EXPORT IPA FROM ARCHIVE)
   sign_ios:
     name: Sign iOS & Export IPA
-    if: ${{ inputs.deploy_to_testflight }}
+    if: ${{ inputs.deploy_to_testflight || inputs.deploy_to_esper_ios }}
     needs: create_release
     runs-on: ${{ inputs.ios_runner }}
 
