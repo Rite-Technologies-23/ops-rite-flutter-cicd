@@ -96,7 +96,7 @@ jobs:
           java-version: 17
 
       - name: Setup Flutter
-        uses: Darryl-Cardoza/flutter-reusable-repo/.github/actions/setup-flutter@main
+        uses: ./.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
@@ -117,7 +117,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Flutter
-        uses: Darryl-Cardoza/flutter-reusable-repo/.github/actions/setup-flutter@main
+        uses: ./.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Flutter
-        uses: Darryl-Cardoza/flutter-reusable-repo/.github/actions/setup-flutter@main
+        uses: ./.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
@@ -178,7 +178,7 @@ jobs:
           java-version: 17
 
       - name: Setup Flutter
-        uses: Darryl-Cardoza/flutter-reusable-repo/.github/actions/setup-flutter@main
+        uses: ./.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
@@ -219,7 +219,7 @@ jobs:
           fi
 
       - name: Setup Flutter
-        uses: Darryl-Cardoza/flutter-reusable-repo/.github/actions/setup-flutter@main
+        uses: ./.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}

@@ -61,7 +61,12 @@ on:
         type: string
         default: playstore/images
 
-      deploy_to_esper:
+      deploy_to_esper_android:
+        required: false
+        type: boolean
+        default: false
+
+      deploy_to_esper_ios:
         required: false
         type: boolean
         default: false
@@ -291,7 +296,7 @@ jobs:
           java-version: 17
 
       - name: Setup Flutter
-        uses: Darryl-Cardoza/flutter-reusable-repo/.github/actions/setup-flutter@main
+        uses: ./.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version}}
           flutter_channel: ${{ inputs.flutter_channel}}
@@ -606,52 +611,158 @@ jobs:
 
   deploy_esper:
     name: Deploy to Esper
-    if: ${{ inputs.deploy_to_esper }}
-    needs: sign_android
-    runs-on: ${{ inputs.android_runner }}
+    if: ${{ inputs.deploy_to_esper_android || inputs.deploy_to_esper_ios }}
+    needs:
+      - sign_android
+      - sign_ios
+    runs-on: ${{ inputs.ios_runner }}
 
     steps:
-      - name: Download signed APK
+      - name: Download signed Android APK
+        if: ${{ inputs.deploy_to_esper_android }}
         uses: actions/download-artifact@v4
         with:
           name: android-signed
           path: release/android
+        continue-on-error: true
 
-      - name: Upload to Esper
+      - name: Download signed iOS IPA
+        if: ${{ inputs.deploy_to_esper_ios }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-ipa-signed
+          path: release/ios
+        continue-on-error: true
+
+      - name: Check Esper credentials
         env:
           ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
           ESPER_ORG_ID: ${{ inputs.esper_org_id }}
           ESPER_TENANT: ${{ inputs.esper_tenant }}
         run: |
-          set -e
+          set -euo pipefail
+          
+          if [ -z "${ESPER_API_KEY}" ]; then
+            echo "❌ ESPER_API_KEY is missing"
+            exit 1
+          fi
+          
+          if [ -z "${ESPER_TENANT}" ]; then
+            echo "❌ esper_tenant input is missing"
+            exit 1
+          fi
+          
+          echo "✅ Esper credentials look present"
 
-          APK=$(find release/android -name "*.apk" | head -n 1)
-
-          if [ -z "$APK" ]; then
-            echo "❌ No signed APK found"
+      - name: Check available app artifacts
+        id: artifact_check
+        run: |
+          set -euo pipefail
+          
+          ANDROID_APK=""
+          IOS_IPA=""
+          
+          if [ -d "release/android" ]; then
+            ANDROID_APK=$(find release/android -name "*.apk" | head -n 1 || true)
+          fi
+          
+          if [ -d "release/ios" ]; then
+            IOS_IPA=$(find release/ios -name "*.ipa" | head -n 1 || true)
+          fi
+          
+          if [ -n "$ANDROID_APK" ]; then
+            echo "android_available=true" >> "$GITHUB_OUTPUT"
+            echo "android_apk=$ANDROID_APK" >> "$GITHUB_OUTPUT"
+            echo "✅ Android artifact found: $ANDROID_APK"
+          else
+            echo "android_available=false" >> "$GITHUB_OUTPUT"
+            echo "android_apk=" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ No Android APK found"
+          fi
+          
+          if [ -n "$IOS_IPA" ]; then
+            echo "ios_available=true" >> "$GITHUB_OUTPUT"
+            echo "ios_ipa=$IOS_IPA" >> "$GITHUB_OUTPUT"
+            echo "✅ iOS artifact found: $IOS_IPA"
+          else
+            echo "ios_available=false" >> "$GITHUB_OUTPUT"
+            echo "ios_ipa=" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ No iOS IPA found"
+          fi
+          
+          if [ "${{ inputs.deploy_to_esper_android }}" = "true" ] && [ -z "$ANDROID_APK" ]; then
+            echo "❌ Android deployment requested but APK not found"
+            exit 1
+          fi
+          
+          if [ "${{ inputs.deploy_to_esper_ios }}" = "true" ] && [ -z "$IOS_IPA" ]; then
+            echo "❌ iOS deployment requested but IPA not found"
             exit 1
           fi
 
+      - name: Deploy Android to Esper
+        if: ${{ inputs.deploy_to_esper_android && steps.artifact_check.outputs.android_available == 'true' }}
+        env:
+          ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
+          ESPER_ORG_ID: ${{ inputs.esper_org_id }}
+          ESPER_TENANT: ${{ inputs.esper_tenant }}
+          APK_PATH: ${{ steps.artifact_check.outputs.android_apk }}
+        run: |
+          set -euo pipefail
+          
           API_URL="https://${ESPER_TENANT}-api.esper.cloud/api/enterprise/${ESPER_ORG_ID}/application/upload/"
-
-          echo "Uploading $APK to Esper..."
+          
+          echo "Uploading Android APK: $APK_PATH"
           echo "API URL: $API_URL"
-
+          
           HTTP_STATUS=$(curl -L -sS -w "%{http_code}" \
             -X POST "$API_URL" \
             -H "Authorization: Bearer ${ESPER_API_KEY}" \
             -H "Accept: application/json" \
-            -F "app_file=@${APK}" \
-            -o esper_response.json)
-
-          echo "Esper response:"
-          cat esper_response.json
-          echo ""
+            -F "app_file=@${APK_PATH}" \
+            -o esper_android_response.json)
+          
+          echo "Esper Android response:"
+          cat esper_android_response.json || true
+          echo
           echo "HTTP Status: $HTTP_STATUS"
-
+          
           if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
-            echo "❌ Esper upload failed"
+            echo "❌ Esper Android upload failed"
             exit 1
           fi
+          
+          echo "✅ Esper Android upload successful"
 
-          echo "✅ Esper upload successful"
+      - name: Deploy iOS to Esper
+        if: ${{ inputs.deploy_to_esper_ios && steps.artifact_check.outputs.ios_available == 'true' }}
+        env:
+          ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
+          ESPER_TENANT: ${{ inputs.esper_tenant }}
+          IOS_IPA_PATH: ${{ steps.artifact_check.outputs.ios_ipa }}
+        run: |
+          set -euo pipefail
+          
+          API_URL="https://${ESPER_TENANT}-api.esper.cloud/api/v2/tenant-apps"
+          
+          echo "Uploading iOS IPA: $IOS_IPA_PATH"
+          echo "API URL: $API_URL"
+          
+          HTTP_STATUS=$(curl -L -sS -w "%{http_code}" \
+            -X POST "$API_URL" \
+            -H "Authorization: Bearer ${ESPER_API_KEY}" \
+            -H "Accept: application/json" \
+            -F "file=@${IOS_IPA_PATH}" \
+            -o esper_ios_response.json)
+          
+          echo "Esper iOS response:"
+          cat esper_ios_response.json || true
+          echo
+          echo "HTTP Status: $HTTP_STATUS"
+          
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
+            echo "❌ Esper iOS upload failed"
+            exit 1
+          fi
+          
+          echo "✅ Esper iOS upload successful"
