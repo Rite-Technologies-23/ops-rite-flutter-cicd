@@ -296,7 +296,7 @@ jobs:
           java-version: 17
 
       - name: Setup Flutter
-        uses: ./.github/actions/setup-flutter@main
+        uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version}}
           flutter_channel: ${{ inputs.flutter_channel}}
