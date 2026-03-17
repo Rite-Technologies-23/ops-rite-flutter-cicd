@@ -611,7 +611,7 @@ jobs:
 
     steps:
       - name: Download signed Android APK
-        if: ${{ inputs.deploy_to_esper_android && sign_android.outputs.android_available == 'true' }}
+        if: ${{ inputs.deploy_to_esper_android }}
         uses: actions/download-artifact@v4
         with:
           name: android-signed
@@ -619,7 +619,7 @@ jobs:
         continue-on-error: true
 
       - name: Download signed iOS IPA
-        if: ${{ inputs.deploy_to_esper_ios && sign_ios.outputs.ios_available == 'true' }}
+        if: ${{ inputs.deploy_to_esper_ios }}
         uses: actions/download-artifact@v4
         with:
           name: ios-ipa-signed
