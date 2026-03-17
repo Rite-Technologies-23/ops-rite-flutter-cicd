@@ -29,11 +29,6 @@ on:
         type: boolean
         default: true
 
-      build_android:
-        required: false
-        type: boolean
-        default: false
-
       build_ios:
         required: false
         type: boolean
@@ -263,7 +258,6 @@ jobs:
           name: coverage-reports
           path: /tmp/coverage
 
-
   ############################################################
   # ANDROID BUILD
   ############################################################
@@ -272,7 +266,6 @@ jobs:
     name: Build Android
     runs-on: ${{ inputs.android_runner }}
     needs: dart_analyzer
-    if: ${{ inputs.build_android }}
 
     steps:
       - uses: actions/checkout@v6
