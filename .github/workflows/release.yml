@@ -752,6 +752,7 @@ jobs:
             -X POST "$API_URL" \
             -H "Authorization: Bearer ${ESPER_API_KEY}" \
             -H "Accept: application/json" \
+            -F "platform=ios" \
             -F "file=@${IOS_IPA_PATH}" \
             -o esper_ios_response.json)
           
