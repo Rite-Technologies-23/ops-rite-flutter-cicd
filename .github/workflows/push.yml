@@ -270,7 +270,7 @@ jobs:
 
   build_android:
     name: Build Android
-    runs-on: ${{ inputs.build_android || inputs.android_runner }}
+    runs-on: ${{ inputs.build_android && inputs.android_runner }}
     needs: dart_analyzer
 
     steps:
