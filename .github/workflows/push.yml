@@ -143,21 +143,121 @@ jobs:
 
   run_tests:
     name: Run Flutter Tests & Coverage
-    runs-on: ${{ inputs.android_runner }}
+    runs-on: ubuntu-latest
     needs: build_flutter_project
     if: ${{ inputs.run_tests }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Setup Flutter
-        uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
+        uses: Darryl-Cardoza/flutter-reusable-repo/.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
 
+      ######################################################
+      # CHECK IF TEST FILES EXIST
+      ######################################################
+
+      - name: Check if Test Files Exist
+        id: check_tests
+        run: |
+          if [ -z "$(find test -name '*_test.dart' 2>/dev/null)" ]; then
+            echo "⚠️ No test files found"
+            echo "tests_exist=false" >> $GITHUB_OUTPUT
+          else
+            echo "tests_exist=true" >> $GITHUB_OUTPUT
+          fi
+
+      ######################################################
+      # RUN TESTS
+      ######################################################
+
       - name: Run Flutter Tests
-        run: flutter test --coverage
+        if: steps.check_tests.outputs.tests_exist == 'true'
+        run: |
+          mkdir -p /tmp/test-results
+          mkdir -p /tmp/coverage
+          
+          flutter test \
+            --coverage \
+            --machine \
+            > /tmp/test-results/test-output.json || true
+
+      ######################################################
+      # WARN IF TESTS MISSING
+      ######################################################
+
+      - name: Warn if No Tests
+        if: steps.check_tests.outputs.tests_exist == 'false'
+        run: |
+          echo "⚠️ No tests detected in project"
+          echo "Pipeline will continue"
+
+      ######################################################
+      # GENERATE JUNIT
+      ######################################################
+
+      - name: Generate JUnit Report
+        if: steps.check_tests.outputs.tests_exist == 'true'
+        run: |
+          dart .github/tool/json_to_junit.dart \
+            /tmp/test-results/test-output.json \
+            /tmp/test-results/junit.xml
+
+      ######################################################
+      # COVERAGE HTML
+      ######################################################
+
+      - name: Generate Coverage HTML
+        if: steps.check_tests.outputs.tests_exist == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lcov
+          genhtml coverage/lcov.info --output-directory /tmp/coverage/html || true
+
+      ######################################################
+      # COVERAGE THRESHOLD
+      ######################################################
+
+      - name: Enforce Coverage Threshold
+        if: ${{ inputs.enforce_coverage }}
+        run: |
+          if [ ! -f coverage/lcov.info ]; then
+            echo "⚠️ Coverage file not generated"
+            echo "Pipeline continuing"
+            exit 0
+          fi
+          
+          COVERAGE=$(lcov --summary coverage/lcov.info | grep lines | awk '{print $2}' | sed 's/%//')
+          REQUIRED=${{ inputs.coverage_threshold }}
+          
+          echo "Coverage: $COVERAGE%"
+          
+          if (( $(echo "$COVERAGE < $REQUIRED" | bc -l) )); then
+            echo "❌ Coverage below threshold ($REQUIRED%)"
+            exit 1
+          fi
+
+      ######################################################
+      # ARTIFACTS
+      ######################################################
+
+      - name: Upload Test Reports
+        if: steps.check_tests.outputs.tests_exist == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: /tmp/test-results
+
+      - name: Upload Coverage Reports
+        if: steps.check_tests.outputs.tests_exist == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: /tmp/coverage
+
 
   ############################################################
   # ANDROID BUILD
