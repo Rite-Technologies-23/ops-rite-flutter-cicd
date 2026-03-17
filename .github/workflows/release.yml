@@ -81,11 +81,6 @@ on:
         type: string
         default: "api"
 
-      esper_app_id:
-        required: false
-        type: string
-        default: ""
-
       deploy_to_testflight:
         required: false
         type: boolean
@@ -274,7 +269,7 @@ jobs:
             /tmp/aligned.apk
 
       - name: Upload signed Android artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: android-signed
           path: release/android/app-release-signed.apk
@@ -502,7 +497,7 @@ jobs:
 
 
       - name: Upload signed IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ios-ipa-signed
           path: ${{ runner.temp }}/export/*.ipa

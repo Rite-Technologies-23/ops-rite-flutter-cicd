@@ -132,7 +132,7 @@ jobs:
           fi
 
       - name: Upload Analyzer Report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Dart-Analyzer-Reports
           path: analyzer-report.txt
@@ -191,7 +191,7 @@ jobs:
           flutter build appbundle --release --build-name=${{ inputs.version_name }} --build-number=1
 
       - name: Upload Android Outputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: android-build
           path: |
@@ -251,7 +251,7 @@ jobs:
           test -d "$ARCHIVE_PATH"
 
       - name: Upload iOS Archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ios-archive-unsigned
           path: ${{ runner.temp }}/ios-archive
