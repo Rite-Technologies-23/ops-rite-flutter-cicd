@@ -223,7 +223,7 @@ jobs:
           name: android-build
           path: release/android
 
-      - name: Install Android build-tools (zipalign/apksigner)
+      - name: Install Android build-tools
         uses: android-actions/setup-android@v3
 
       - name: Install Build Tools 34.0.0
@@ -235,28 +235,37 @@ jobs:
 
       - name: Verify tools
         run: |
+          set -e
           which zipalign
           which apksigner
+          which jarsigner
           zipalign -h | head -n 1
           apksigner --version
+          jarsigner -help >/dev/null
 
-
-      - name: Decode Keystore
+      - name: Decode keystore
         run: |
           set -e
           mkdir -p /tmp/android
           printf "%s" "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > /tmp/android/upload-keystore.jks
 
+      # --------------------------------------------------------------------------
+      # Sign APK for direct distribution / Esper
+      # --------------------------------------------------------------------------
       - name: Sign APK
+        if: ${{ inputs.deploy_to_esper_android }}
         run: |
           set -e
+
           APK=$(find release/android -name "*release*.apk" | head -n 1)
 
           if [ -z "$APK" ]; then
-            echo "No release APK found under release/android"
-            find release/android -maxdepth 4 -type f
+            echo "❌ No release APK found under release/android"
+            find release/android -maxdepth 6 -type f
             exit 1
           fi
+
+          echo "Using APK: $APK"
 
           zipalign -f 4 "$APK" /tmp/aligned.apk
 
@@ -268,11 +277,60 @@ jobs:
             --out release/android/app-release-signed.apk \
             /tmp/aligned.apk
 
+          echo "✅ APK signed"
+
+      - name: Verify signed APK
+        if: ${{ inputs.deploy_to_esper_android }}
+        run: |
+          set -e
+          apksigner verify --verbose --print-certs release/android/app-release-signed.apk
+
+      # --------------------------------------------------------------------------
+      # Sign AAB for Play Store
+      # --------------------------------------------------------------------------
+      - name: Sign AAB
+        if: ${{ inputs.deploy_to_playstore }}
+        run: |
+          set -e
+
+          AAB=$(find release/android -name "*release*.aab" | head -n 1)
+
+          if [ -z "$AAB" ]; then
+            echo "❌ No release AAB found under release/android"
+            find release/android -maxdepth 6 -type f
+            exit 1
+          fi
+
+          echo "Using AAB: $AAB"
+
+          cp "$AAB" release/android/app-release-signed.aab
+
+          jarsigner \
+            -verbose \
+            -sigalg SHA256withRSA \
+            -digestalg SHA-256 \
+            -keystore /tmp/android/upload-keystore.jks \
+            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+            -keypass "${{ secrets.KEY_PASSWORD }}" \
+            release/android/app-release-signed.aab \
+            "${{ secrets.KEY_ALIAS }}"
+
+          echo "✅ AAB signed"
+
+      - name: Verify signed AAB
+        if: ${{ inputs.deploy_to_playstore }}
+        run: |
+          set -e
+          jarsigner -verify -verbose -certs release/android/app-release-signed.aab
+
       - name: Upload signed Android artifacts
         uses: actions/upload-artifact@v6
         with:
           name: android-signed
-          path: release/android/app-release-signed.apk
+          path: |
+            release/android/app-release-signed.apk
+            release/android/app-release-signed.aab
+          if-no-files-found: warn
 
   # DEPLOY TO PLAY STORE
   deploy_playstore:
