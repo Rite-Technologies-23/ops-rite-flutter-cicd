@@ -418,49 +418,90 @@ jobs:
           echo "🔎 Default keychain:"
           security default-keychain -d user
 
+      - name: Inspect provisioning profile
+        run: |
+          set -e
+          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          /usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/profile.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/profile.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$RUNNER_TEMP/profile.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :ProvisionsAllDevices' "$RUNNER_TEMP/profile.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$RUNNER_TEMP/profile.plist" || true
+
       - name: Generate ExportOptions.plist
         run: |
           set -e
+
           if [ -z "${{ inputs.ios_bundle_id }}" ]; then
             echo "❌ inputs.ios_bundle_id required for iOS export"
             exit 1
           fi
+
           if [ -z "${{ secrets.IOS_TEAM_ID }}" ]; then
-            echo "❌ inputs.ios_team_id required for manual signing"
+            echo "❌ IOS_TEAM_ID required for manual signing"
             exit 1
           fi
-          
+
           PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin <<< "$(security cms -D -i "$RUNNER_TEMP/profile.mobileprovision")")
-  
+
+          # Decide export method based on target
+          if [ "${{ inputs.deploy_to_testflight }}" = "true" ]; then
+            EXPORT_METHOD="app-store-connect"
+          elif [ "${{ inputs.deploy_to_esper_ios }}" = "true" ]; then
+            # Change to ad-hoc if your provisioning profile is ad hoc rather than enterprise
+            EXPORT_METHOD="enterprise"
+          else
+            echo "❌ No valid iOS export target enabled"
+            exit 1
+          fi
+
+          echo "Using export method: $EXPORT_METHOD"
+          echo "Using provisioning profile: $PROFILE_NAME"
+
           cat > ios/ExportOptions.plist <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-          <key>method</key>
-          <string>app-store-connect</string>
-        
-          <key>signingStyle</key>
-          <string>manual</string>
-        
-          <key>teamID</key>
-          <string>${{ secrets.IOS_TEAM_ID }}</string>
-        
-          <key>provisioningProfiles</key>
-          <dict>
-          <key>${{ inputs.ios_bundle_id }}</key>
-          <string>${PROFILE_NAME}</string>
-          </dict>
-        
-          <key>compileBitcode</key>
-          <false/>
-        
-          <key>stripSwiftSymbols</key>
-          <true/>
+            <key>method</key>
+            <string>${EXPORT_METHOD}</string>
+
+            <key>signingStyle</key>
+            <string>manual</string>
+
+            <key>teamID</key>
+            <string>${{ secrets.IOS_TEAM_ID }}</string>
+
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ inputs.ios_bundle_id }}</key>
+              <string>${PROFILE_NAME}</string>
+            </dict>
+
+            <key>compileBitcode</key>
+            <false/>
+
+            <key>stripSwiftSymbols</key>
+            <true/>
           </dict>
           </plist>
           EOF
-          
+
+          echo "Generated ExportOptions.plist:"
+          cat ios/ExportOptions.plist
+
+      - name: Verify embedded.mobileprovision exists
+        if: ${{ inputs.deploy_to_esper_ios }}
+        run: |
+          set -e
+          IPA=$(find "$RUNNER_TEMP/export" -name "*.ipa" | head -n 1)
+          rm -rf /tmp/ipa_check
+          mkdir -p /tmp/ipa_check
+          unzip -q "$IPA" -d /tmp/ipa_check
+          APP=$(find /tmp/ipa_check/Payload -maxdepth 1 -name "*.app" | head -n 1)
+          test -f "$APP/embedded.mobileprovision" || (echo "❌ embedded.mobileprovision missing"; exit 1)
+          echo "✅ embedded.mobileprovision found"
 
       - name: Export IPA
         run: |
