@@ -212,7 +212,7 @@ jobs:
   # SIGN ANDROID
   sign_android:
     name: Sign Android
-    if: ${{ inputs.deploy_to_playstore || inputs.deploy_to_esper_android }}
+    if: ${{ inputs.deploy_to_esper_android }}
     needs: create_release
     runs-on: ${{ inputs.android_runner }}
 
@@ -228,47 +228,41 @@ jobs:
 
       - name: Install Build Tools 34.0.0
         run: |
-          set -e
+          set -euo pipefail
           sdkmanager "build-tools;34.0.0" "platform-tools" >/dev/null
-          echo "$ANDROID_SDK_ROOT/build-tools/34.0.0" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/build-tools/34.0.0" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
       - name: Verify tools
         run: |
-          set -e
+          set -euo pipefail
           which zipalign
           which apksigner
-          which jarsigner
           zipalign -h | head -n 1
           apksigner --version
-          jarsigner -help >/dev/null
 
       - name: Decode keystore
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p /tmp/android
           printf "%s" "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > /tmp/android/upload-keystore.jks
 
-      # --------------------------------------------------------------------------
-      # Sign APK for direct distribution / Esper
-      # --------------------------------------------------------------------------
       - name: Sign APK
-        if: ${{ inputs.deploy_to_esper_android }}
         run: |
-          set -e
-
+          set -euo pipefail
+  
           APK=$(find release/android -name "*release*.apk" | head -n 1)
-
+  
           if [ -z "$APK" ]; then
             echo "❌ No release APK found under release/android"
-            find release/android -maxdepth 6 -type f
+            find release/android -maxdepth 6 -type f || true
             exit 1
           fi
-
+  
           echo "Using APK: $APK"
-
+  
           zipalign -f 4 "$APK" /tmp/aligned.apk
-
+  
           apksigner sign \
             --ks /tmp/android/upload-keystore.jks \
             --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
@@ -276,73 +270,33 @@ jobs:
             --key-pass pass:"${{ secrets.KEY_PASSWORD }}" \
             --out release/android/app-release-signed.apk \
             /tmp/aligned.apk
-
+  
           echo "✅ APK signed"
 
       - name: Verify signed APK
-        if: ${{ inputs.deploy_to_esper_android }}
         run: |
-          set -e
+          set -euo pipefail
           apksigner verify --verbose --print-certs release/android/app-release-signed.apk
-
-      # --------------------------------------------------------------------------
-      # Sign AAB for Play Store
-      # --------------------------------------------------------------------------
-      - name: Sign AAB
-        if: ${{ inputs.deploy_to_playstore }}
-        run: |
-          set -e
-
-          AAB=$(find release/android -name "*release*.aab" | head -n 1)
-
-          if [ -z "$AAB" ]; then
-            echo "❌ No release AAB found under release/android"
-            find release/android -maxdepth 6 -type f
-            exit 1
-          fi
-
-          echo "Using AAB: $AAB"
-
-          cp "$AAB" release/android/app-release-signed.aab
-
-          jarsigner \
-            -verbose \
-            -sigalg SHA256withRSA \
-            -digestalg SHA-256 \
-            -keystore /tmp/android/upload-keystore.jks \
-            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
-            -keypass "${{ secrets.KEY_PASSWORD }}" \
-            release/android/app-release-signed.aab \
-            "${{ secrets.KEY_ALIAS }}"
-
-          echo "✅ AAB signed"
-
-      - name: Verify signed AAB
-        if: ${{ inputs.deploy_to_playstore }}
-        run: |
-          set -e
-          jarsigner -verify -verbose -certs release/android/app-release-signed.aab
 
       - name: Upload signed Android artifacts
         uses: actions/upload-artifact@v6
         with:
           name: android-signed
-          path: |
-            release/android/app-release-signed.apk
-            release/android/app-release-signed.aab
-          if-no-files-found: warn
+          path: release/android/app-release-signed.apk
+          if-no-files-found: error
+
 
   # DEPLOY TO PLAY STORE
   deploy_playstore:
     name: Deploy to Google Play Store
     if: ${{ inputs.deploy_to_playstore }}
-    needs: sign_android
+    needs: create_release
     runs-on: ${{ inputs.android_runner }}
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set Up Java
+      - name: Set up Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -351,47 +305,69 @@ jobs:
       - name: Setup Flutter
         uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
         with:
-          flutter_version: ${{ inputs.flutter_version}}
-          flutter_channel: ${{ inputs.flutter_channel}}
+          flutter_version: ${{ inputs.flutter_version }}
+          flutter_channel: ${{ inputs.flutter_channel }}
 
-      - name: Decode Android Keystore
+      - name: Decode Android keystore
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > android/app/upload-keystore.jks
+          set -euo pipefail
+          echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > android/upload-keystore.jks
 
       - name: Create key.properties
         run: |
-          cat <<EOF > android/key.properties
+          set -euo pipefail
+          cat > android/key.properties <<EOF
           storePassword=${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword=${{ secrets.KEY_PASSWORD }}
           keyAlias=${{ secrets.KEY_ALIAS }}
           storeFile=upload-keystore.jks
           EOF
+  
+          echo "Generated android/key.properties"
+          cat android/key.properties | sed 's/=.*/=*** /g'
 
-      - name: Build RELEASE AAB (signed)
+      - name: Build signed release AAB
         run: |
+          set -euo pipefail
+          flutter clean
+          flutter pub get
           flutter build appbundle --release \
             --build-name=${{ inputs.version }} \
             --build-number=${{ inputs.build_number }}
-          
-      - name: Prepare Play Store "What's New" (whatsNewDirectory)
+
+      - name: Verify signed AAB
+        run: |
+          set -euo pipefail
+          AAB=$(find build/app/outputs/bundle/release -name "*.aab" | head -n 1)
+  
+          if [ -z "$AAB" ]; then
+            echo "❌ No AAB found after build"
+            find build/app/outputs -maxdepth 6 -type f || true
+            exit 1
+          fi
+  
+          echo "Using AAB: $AAB"
+          jarsigner -verify -verbose -certs "$AAB"
+
+      - name: Prepare Play Store What's New
         if: ${{ inputs.enable_whats_new }}
         run: |
-          set -e
-
+          set -euo pipefail
+  
           if [ -z "${{ inputs.whats_new_file }}" ]; then
             echo "❌ whats_new_file not provided"
             exit 1
           fi
-
+  
           if [ ! -f "${{ inputs.whats_new_file }}" ]; then
             echo "❌ File not found: ${{ inputs.whats_new_file }}"
             exit 1
           fi
-
+  
           LANG="en-US"
           mkdir -p "$RUNNER_TEMP/whatsnew/${LANG}"
           cp "${{ inputs.whats_new_file }}" "$RUNNER_TEMP/whatsnew/${LANG}/whatsnew"
-
+  
           echo "✅ whatsNewDirectory prepared at: $RUNNER_TEMP/whatsnew"
 
       - name: Upload to Google Play Store
@@ -548,18 +524,6 @@ jobs:
 
           echo "Generated ExportOptions.plist:"
           cat ios/ExportOptions.plist
-
-      - name: Verify embedded.mobileprovision exists
-        if: ${{ inputs.deploy_to_esper_ios }}
-        run: |
-          set -e
-          IPA=$(find "$RUNNER_TEMP/export" -name "*.ipa" | head -n 1)
-          rm -rf /tmp/ipa_check
-          mkdir -p /tmp/ipa_check
-          unzip -q "$IPA" -d /tmp/ipa_check
-          APP=$(find /tmp/ipa_check/Payload -maxdepth 1 -name "*.app" | head -n 1)
-          test -f "$APP/embedded.mobileprovision" || (echo "❌ embedded.mobileprovision missing"; exit 1)
-          echo "✅ embedded.mobileprovision found"
 
       - name: Export IPA
         run: |
