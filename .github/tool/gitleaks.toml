@@ -1,0 +1,59 @@
+# gitleaks configuration for Flutter pipelines.
+# Extends the upstream default rule set and adds Flutter/Android/iOS allowlists
+# so the scan does not drown in false positives from build output and fixtures.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlist for Flutter build output and fixtures"
+
+paths = [
+  '''(^|.*/)build/.*''',
+  '''(^|.*/)\.dart_tool/.*''',
+  '''(^|.*/)\.gradle/.*''',
+  '''(^|.*/)Pods/.*''',
+  '''.*\.(g|freezed|mocks)\.dart$''',
+  '''pubspec\.lock$''',
+  '''ios/Podfile\.lock$''',
+  '''.*\.(png|jpg|jpeg|webp|gif|svg|ttf|otf|so|jar|aar|apk|aab|ipa)$''',
+  # google-services.json / GoogleService-Info.plist / firebase_options.dart
+  # carry the app's Firebase API keys. Google documents these as
+  # ship-with-the-app, not secrets: restrict them in the GCP console (package
+  # name + SHA-1 / bundle ID, allowed APIs) instead. Only keep this allowlist
+  # once those restrictions are confirmed for the project's keys.
+  '''.*/google-services\.json$''',
+  '''.*/GoogleService-Info\.plist$''',
+  '''(^|.*/)lib/firebase_options\.dart$''',
+]
+
+regexes = [
+  # Placeholder values used in templates and sample configs.
+  '''(?i)(your|example|sample|dummy|placeholder|changeme|xxxx)[-_]?(key|token|secret|password)''',
+]
+
+[[rules]]
+id = "google-api-key"
+description = "Google API key committed in source"
+regex = '''AIza[0-9A-Za-z\-_]{35}'''
+tags = ["key", "google"]
+
+[[rules]]
+id = "android-keystore-password"
+description = "Keystore or signing password hardcoded in a Gradle/properties file"
+regex = '''(?i)(storePassword|keyPassword|keyAlias|signingPassword)\s*[=:]\s*["']?[^"'$\s]{3,}'''
+path = '''.*\.(gradle|kts|properties)$'''
+tags = ["android", "signing"]
+
+[[rules]]
+id = "firebase-server-key"
+description = "Firebase Cloud Messaging server key"
+regex = '''AAAA[A-Za-z0-9_\-]{7}:[A-Za-z0-9_\-]{140,}'''
+tags = ["key", "firebase"]
+
+[[rules]]
+id = "apple-p8-private-key"
+description = "App Store Connect / APNs .p8 private key"
+regex = '''-----BEGIN PRIVATE KEY-----'''
+path = '''.*\.p8$'''
+tags = ["key", "apple"]

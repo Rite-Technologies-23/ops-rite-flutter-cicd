@@ -1,9 +1,28 @@
-name: "Flutter CI Reusable Workflow"
+name: "Flutter CI - Reusable"
+
+# ---------------------------------------------------------------------------
+# Complete CI for Flutter/Dart, built entirely from free tooling.
+#
+#   Security          gitleaks + Semgrep OSS (secrets + Flutter rules) +
+#                     Trivy over pubspec.lock / Podfile.lock / Gradle files
+#   Dead code         Analyzer unused_* diagnostics + dependency_validator
+#                     (unused/missing pub deps), optional dart_code_linter
+#   Static typing     Dart analyzer (sound null safety; fatal warnings,
+#                     optional fatal infos)
+#   Lint + format     dart analyze (lint) + dart format (format gate)
+#   Tests + coverage  flutter test + lcov line-coverage gate
+#   Build             APK + AAB, optional unsigned iOS xcarchive
+#
+# Shared configs and scripts come from this repo, checked out into .pipeline
+# by the setup-flutter action, so a caller repository needs no file changes.
+# A caller-owned analysis_options.yaml always wins over the shared one.
+# ---------------------------------------------------------------------------
 
 on:
   workflow_call:
     inputs:
 
+      # ---- core ----
       flutter_version:
         required: false
         type: string
@@ -14,42 +33,25 @@ on:
         type: string
         default: "stable"
 
-      coverage_threshold:
-        required: false
-        type: string
-        default: "80"
-
-      run_tests:
-        required: false
-        type: boolean
-        default: true
-
-      enforce_coverage:
-        required: false
-        type: boolean
-        default: true
-
-      build_ios:
-        required: false
-        type: boolean
-        default: false
-
-      package_name:
-        required: true
-        type: string
-
-      ios_bundle_id:
-        required: false
-        type: string
-
       version_name:
-        required: true
-        type: string
-
-      playstore_track:
         required: false
         type: string
-        default: internal
+        default: "1.0.0"
+        description: "--build-name for the APK/AAB/xcarchive."
+
+      build_number:
+        required: false
+        type: string
+        default: "1"
+        description: >-
+          --build-number for the APK/AAB/xcarchive. Pass github.run_number (or
+          any increasing number). release.yml no longer rebuilds, so this is the
+          versionCode / CFBundleVersion that ships.
+
+      java_version:
+        required: false
+        type: string
+        default: "17"
 
       android_runner:
         required: false
@@ -61,296 +63,747 @@ on:
         type: string
         default: macos-latest
 
+      security_runner:
+        required: false
+        type: string
+        default: ubuntu-latest
+        description: "The security stage needs no Flutter SDK; keep it on a 1x Linux runner."
+
+      # ---- stage toggles ----
+      run_formatting:
+        required: false
+        type: boolean
+        default: true
+
+      run_static_analysis:
+        required: false
+        type: boolean
+        default: true
+
+      run_security:
+        required: false
+        type: boolean
+        default: true
+
+      run_dependency_audit:
+        required: false
+        type: boolean
+        default: true
+
+      run_dead_code:
+        required: false
+        type: boolean
+        default: true
+
+      run_deep_dead_code:
+        required: false
+        type: boolean
+        default: false
+        description: >-
+          dart_code_linter check-unused-code / check-unused-files over lib/.
+          Off by default: slower, and needs triage of false positives.
+
+      run_tests:
+        required: false
+        type: boolean
+        default: true
+
+      run_build:
+        required: false
+        type: boolean
+        default: true
+        description: "Build the APK/AAB. Turn off for checks-only runs (PRs, plain pushes)."
+
+      build_ios:
+        required: false
+        type: boolean
+        default: false
+        description: "Build the unsigned iOS xcarchive on ios_runner (10x billing)."
+
+      # ---- tuning ----
+      coverage_threshold:
+        required: false
+        type: string
+        default: "80"
+        description: "Minimum LINE coverage %."
+
+      enforce_coverage:
+        required: false
+        type: boolean
+        default: true
+
+      coverage_exclude:
+        required: false
+        type: string
+        default: '\.g\.dart$|\.freezed\.dart$|\.mocks\.dart$|\.gr\.dart$|\.config\.dart$'
+        description: "ERE of source paths excluded from the coverage figure (generated code)."
+
+      analyzer_fatal_infos:
+        required: false
+        type: boolean
+        default: false
+        description: "Fail the analyzer on info-level lints too, not just errors and warnings."
+
+      # ---- gates ----
+      fail_on_lint:
+        required: false
+        type: boolean
+        default: true
+
+      fail_on_formatting:
+        required: false
+        type: boolean
+        default: true
+
+      fail_on_security:
+        required: false
+        type: boolean
+        default: true
+        description: "Fail on Semgrep ERROR findings and leaked secrets."
+
+      fail_on_vulnerabilities:
+        required: false
+        type: boolean
+        default: false
+        description: >-
+          Fail on HIGH/CRITICAL CVEs in dependencies. Off by default: a first scan
+          of an existing app almost always has findings. Flip on after triage.
+
+      fail_on_dead_code:
+        required: false
+        type: boolean
+        default: false
+        description: "Fail on unused/missing dependencies and (deep) unused code."
+
+      # ---- unused, kept so existing callers don't break ----
+      package_name:
+        required: false
+        type: string
+        default: ""
+        description: "Unused by CI. Kept for backward compatibility."
+
+      ios_bundle_id:
+        required: false
+        type: string
+        default: ""
+        description: "Unused by CI. Kept for backward compatibility."
+
+      playstore_track:
+        required: false
+        type: string
+        default: internal
+        description: "Unused by CI. Kept for backward compatibility."
+
     secrets:
+      PIPELINE_TOKEN:
+        required: false
+        description: >-
+          Only required when THIS pipeline repo is private and the caller lives
+          in a different repo. A read-scoped PAT or GitHub App token.
+      # Unused. Kept for backward compatibility.
       SONAR_TOKEN:
         required: false
       CODACY_PROJECT_TOKEN:
         required: false
 
-concurrency:
-  group: playstore-${{ inputs.package_name }}
-  cancel-in-progress: false
+    outputs:
+      coverage_percent:
+        description: "Computed LINE coverage percent (empty when no tests ran)"
+        value: ${{ jobs.test.outputs.coverage_percent }}
 
 env:
-  FLUTTER_VERSION: ${{ inputs.flutter_version }}
-  FLUTTER_CHANNEL: ${{ inputs.flutter_channel }}
-  COVERAGE_THRESHOLD: ${{ inputs.coverage_threshold }}
+  # Tool versions. Kept in step with the Android/iOS pipelines.
+  GITLEAKS_VERSION: "8.21.2"
+  TRIVY_VERSION: "0.74.0"
+  SEMGREP_VERSION: "1.165.0"
 
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flutter-ci-${{ github.repository }}-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Every setup-flutter call is pinned to "@main" because a `uses:` ref cannot be
+# an expression. The action resolves .pipeline from its own action_ref, so
+# configs and scripts always match whatever ref these lines point at. When this
+# repo starts cutting release tags, bump every "@main" below with the release.
 jobs:
 
-  ############################################################
-  # BUILD SETUP
-  ############################################################
-
-  build_flutter_project:
-    name: Setup Flutter Project
+  # =========================================================================
+  # 1. LINT + FORMAT
+  # =========================================================================
+  quality:
+    name: Lint & Format
     runs-on: ${{ inputs.android_runner }}
+    if: ${{ inputs.run_static_analysis || inputs.run_formatting }}
 
     steps:
-      - uses: actions/checkout@v6
 
-      - name: Set Up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 17
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
+          pipeline_token: ${{ secrets.PIPELINE_TOKEN }}
 
-      - name: Flutter Pub Get
-        run: flutter pub get
-
-  ############################################################
-  # DART ANALYZER
-  ############################################################
-
-  dart_analyzer:
-    name: Run Dart Analyzer
-    runs-on: ${{ inputs.android_runner }}
-    needs: build_flutter_project
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Flutter
-        uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
-        with:
-          flutter_version: ${{ inputs.flutter_version }}
-          flutter_channel: ${{ inputs.flutter_channel }}
-
-      - name: Run Dart Analyzer
+      # .pipeline holds Dart files of its own; move it out of the package so
+      # the analyzer and formatter only ever see the caller's code.
+      - name: Move pipeline checkout out of the package
         run: |
-          dart analyze > analyzer-report.txt || true
+          set -euo pipefail
+          mv .pipeline "$RUNNER_TEMP/pipeline"
+          mkdir -p build/reports
 
-          if grep -q "error •" analyzer-report.txt; then
-            echo "❌ Dart analyzer errors found"
+      # -------------------------------------------------------------------
+      # Formatting gate. Only tracked, hand-written files are checked.
+      # `dart format .` is the local fix.
+      # -------------------------------------------------------------------
+      - name: Format check (dart format)
+        if: ${{ inputs.run_formatting }}
+        continue-on-error: ${{ !inputs.fail_on_formatting }}
+        run: |
+          set -euo pipefail
+          git ls-files -z '*.dart' \
+            | grep -zvE '\.(g|freezed|mocks|gr|config)\.dart$' \
+            | xargs -0 -r dart format --output=none --set-exit-if-changed
+
+      - name: Formatting hint on failure
+        if: ${{ failure() && inputs.run_formatting }}
+        run: echo "::notice::Run 'dart format .' locally to fix formatting."
+
+      # -------------------------------------------------------------------
+      # Analyzer. Exit code is the gate (errors + warnings always fatal,
+      # infos when analyzer_fatal_infos). Machine format feeds annotations,
+      # the summary and the HTML report.
+      # -------------------------------------------------------------------
+      - name: Static analysis (dart analyze)
+        if: ${{ inputs.run_static_analysis }}
+        continue-on-error: ${{ !inputs.fail_on_lint }}
+        env:
+          FATAL_INFOS: ${{ inputs.analyzer_fatal_infos }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f analysis_options.yaml ]; then
+            echo "No analysis_options.yaml in the caller repo -- using the pipeline's shared one"
+            cp "$RUNNER_TEMP/pipeline/.github/tool/analysis_options.yaml" analysis_options.yaml
+          fi
+
+          FLAGS=(--fatal-warnings)
+          if [ "$FATAL_INFOS" = "true" ]; then
+            FLAGS+=(--fatal-infos)
+          fi
+
+          set +e
+          dart analyze --format=machine "${FLAGS[@]}" > build/reports/analyzer-report.txt 2>&1
+          STATUS=$?
+          set -e
+
+          # SEVERITY|TYPE|CODE|FILE|LINE|COL|LENGTH|MESSAGE
+          awk -F'|' -v ws="$GITHUB_WORKSPACE/" 'NF >= 8 {
+            lvl = ($1 == "ERROR") ? "error" : ($1 == "WARNING") ? "warning" : "notice"
+            f = $4; if (index(f, ws) == 1) f = substr(f, length(ws) + 1)
+            printf "::%s file=%s,line=%s,col=%s::%s (%s)\n", lvl, f, $5, $6, $8, tolower($3)
+          }' build/reports/analyzer-report.txt
+
+          awk -F'|' 'NF >= 8 { c[$1]++ } END {
+            printf "Analyzer: %d error(s), %d warning(s), %d info(s)\n", c["ERROR"], c["WARNING"], c["INFO"]
+          }' build/reports/analyzer-report.txt | tee build/reports/analyzer-summary.txt
+
+          exit "$STATUS"
+
+      - name: Analyzer HTML report
+        if: ${{ always() && inputs.run_static_analysis }}
+        run: |
+          [ -f build/reports/analyzer-report.txt ] || exit 0
+          dart "$RUNNER_TEMP/pipeline/.github/tool/analyzer_to_html.dart" \
+            build/reports/analyzer-report.txt build/reports/analyzer-report.html || true
+
+      - name: Upload lint & format reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-lint-format
+          path: build/reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # =========================================================================
+  # 2. SECURITY  (no Flutter SDK needed -- runs on a 1x Linux runner)
+  # =========================================================================
+  security:
+    name: Security Scan
+    runs-on: ${{ inputs.security_runner }}
+    if: ${{ inputs.run_security || inputs.run_dependency_audit }}
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks scans history, not just the worktree
+
+      - name: Checkout pipeline configs
+        uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
+        with:
+          install_flutter: "false"
+          pub_get: "false"
+          pipeline_token: ${{ secrets.PIPELINE_TOKEN }}
+
+      # -------------------------------------------------------------------
+      # 2a. Secret scanning -- gitleaks binary (the marketplace action needs
+      #     a paid licence for organisations).
+      # -------------------------------------------------------------------
+      - name: Install gitleaks
+        if: ${{ inputs.run_security }}
+        run: |
+          set -euo pipefail
+          curl -sSLo /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSLo /tmp/gitleaks_checksums.txt \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          EXPECTED=$(grep "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz\$" /tmp/gitleaks_checksums.txt | awk '{print $1}')
+          ACTUAL=$(sha256sum /tmp/gitleaks.tar.gz | awk '{print $1}')
+          if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::gitleaks checksum mismatch (expected $EXPECTED, got $ACTUAL)"
+            exit 1
+          fi
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan for committed secrets
+        if: ${{ inputs.run_security }}
+        continue-on-error: ${{ !inputs.fail_on_security }}
+        run: |
+          set -euo pipefail
+          gitleaks detect \
+            --source . \
+            --config .pipeline/.github/tool/gitleaks.toml \
+            --report-format sarif \
+            --report-path gitleaks.sarif \
+            --redact \
+            --exit-code 1 \
+            --verbose
+
+      # -------------------------------------------------------------------
+      # 2b. SAST -- Semgrep OSS. Dart support is experimental in Semgrep, so
+      #     the registry has no Dart pack; p/secrets plus our own rules.
+      # -------------------------------------------------------------------
+      - name: Set up Python
+        if: ${{ inputs.run_security }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Semgrep
+        if: ${{ inputs.run_security }}
+        run: python -m pip install --quiet --disable-pip-version-check "semgrep==${SEMGREP_VERSION}"
+
+      - name: Run Semgrep (SAST)
+        if: ${{ inputs.run_security }}
+        run: |
+          set -euo pipefail
+
+          # Never fail here -- the gate step below decides, so that a scanner
+          # outage cannot be mistaken for a security finding.
+          semgrep scan \
+            --config p/secrets \
+            --config .pipeline/.github/tool/semgrep/flutter-rules.yml \
+            --exclude 'build' \
+            --exclude '.dart_tool' \
+            --exclude '.pipeline' \
+            --exclude 'Pods' \
+            --exclude '*.g.dart' \
+            --exclude '*.freezed.dart' \
+            --metrics=off \
+            --json --output semgrep.json \
+            --no-error || true
+
+          test -f semgrep.json || echo '{"results":[],"errors":[]}' > semgrep.json
+
+      - name: Gate on Semgrep ERROR findings
+        if: ${{ inputs.run_security }}
+        continue-on-error: ${{ !inputs.fail_on_security }}
+        run: |
+          set -euo pipefail
+
+          ERRORS=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep.json)
+          WARNS=$(jq  '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep.json)
+
+          echo "Semgrep: ${ERRORS} error(s), ${WARNS} warning(s)"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            jq -r '.results[] | select(.extra.severity == "ERROR")
+                   | "::error file=\(.path),line=\(.start.line)::[\(.check_id)] \(.extra.message | gsub("\n"; " "))"' \
+                   semgrep.json
             exit 1
           fi
 
-      - name: Upload Analyzer Report
-        uses: actions/upload-artifact@v6
+      # -------------------------------------------------------------------
+      # 2c. Dependency CVEs. pubspec.lock and Podfile.lock are real
+      #     lockfiles, so Trivy reads them directly -- no SBOM step needed.
+      # -------------------------------------------------------------------
+      - name: Install Trivy
+        if: ${{ inputs.run_dependency_audit }}
+        run: |
+          set -euo pipefail
+          curl -sSLo /tmp/trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSLo /tmp/trivy_checksums.txt \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          EXPECTED=$(grep "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz\$" /tmp/trivy_checksums.txt | awk '{print $1}')
+          ACTUAL=$(sha256sum /tmp/trivy.tar.gz | awk '{print $1}')
+          if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::trivy checksum mismatch (expected $EXPECTED, got $ACTUAL)"
+            exit 1
+          fi
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Scan dependencies for known CVEs
+        if: ${{ inputs.run_dependency_audit }}
+        continue-on-error: ${{ !inputs.fail_on_vulnerabilities }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f pubspec.lock ]; then
+            echo "::warning::pubspec.lock is not committed -- Trivy cannot audit Dart dependencies. Commit it (recommended for apps)."
+          fi
+
+          TRIVY_ARGS=(
+            --scanners vuln
+            --skip-dirs .pipeline,build,.dart_tool
+            --severity LOW,MEDIUM,HIGH,CRITICAL
+            --exit-code 0
+          )
+
+          trivy fs . "${TRIVY_ARGS[@]}" --format json --output trivy.json
+          trivy fs . "${TRIVY_ARGS[@]}" --format table --severity HIGH,CRITICAL
+
+          COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy.json)
+          echo "Trivy: ${COUNT} HIGH/CRITICAL vulnerabilities"
+
+          if [ "$COUNT" -gt 0 ]; then
+            exit 1
+          fi
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: Dart-Analyzer-Reports
-          path: analyzer-report.txt
+          name: reports-security
+          path: |
+            semgrep.json
+            gitleaks.sarif
+            trivy.json
+          if-no-files-found: ignore
+          retention-days: 30
 
-  ############################################################
-  # TESTS
-  ############################################################
-
-  run_tests:
-    name: Run Flutter Tests & Coverage
-    runs-on: ubuntu-latest
-    needs: build_flutter_project
-    if: ${{ inputs.run_tests }}
+  # =========================================================================
+  # 3. DEAD CODE
+  #    Unused imports/locals/privates are already analyzer warnings (gated
+  #    in `quality`). This stage covers what the analyzer can't see.
+  # =========================================================================
+  dead_code:
+    name: Dead Code Analysis
+    runs-on: ${{ inputs.android_runner }}
+    if: ${{ inputs.run_dead_code }}
 
     steps:
-      - uses: actions/checkout@v4
+
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Flutter
-        uses: Darryl-Cardoza/flutter-reusable-repo/.github/actions/setup-flutter@main
+        uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
+          fetch_pipeline: "false"
 
-      ######################################################
-      # CHECK IF TEST FILES EXIST
-      ######################################################
+      # Configure exceptions (e.g. cupertino_icons, build_runner) in the
+      # caller's dart_dependency_validator.yaml.
+      - name: Unused / missing dependencies (dependency_validator)
+        continue-on-error: ${{ !inputs.fail_on_dead_code }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/reports
+          dart pub global activate dependency_validator > /dev/null
+          set +e
+          dart pub global run dependency_validator 2>&1 | tee build/reports/dependency-validator.txt
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          exit "$STATUS"
 
-      - name: Check if Test Files Exist
+      - name: Unused code and files (dart_code_linter)
+        if: ${{ inputs.run_deep_dead_code }}
+        continue-on-error: ${{ !inputs.fail_on_dead_code }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/reports
+          dart pub global activate dart_code_linter > /dev/null
+          STATUS=0
+          dart pub global run dart_code_linter:metrics check-unused-code lib --fatal-unused \
+            2>&1 | tee build/reports/unused-code.txt || STATUS=1
+          dart pub global run dart_code_linter:metrics check-unused-files lib --fatal-unused \
+            2>&1 | tee build/reports/unused-files.txt || STATUS=1
+          exit "$STATUS"
+
+      - name: Upload dead-code reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-dead-code
+          path: build/reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # =========================================================================
+  # 4. TESTS + COVERAGE
+  # =========================================================================
+  test:
+    name: Tests & Coverage
+    runs-on: ${{ inputs.android_runner }}
+    if: ${{ inputs.run_tests }}
+
+    outputs:
+      coverage_percent: ${{ steps.coverage.outputs.coverage_percent }}
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
+        with:
+          flutter_version: ${{ inputs.flutter_version }}
+          flutter_channel: ${{ inputs.flutter_channel }}
+          pipeline_token: ${{ secrets.PIPELINE_TOKEN }}
+
+      - name: Check if test files exist
         id: check_tests
         run: |
           if [ -z "$(find test -name '*_test.dart' 2>/dev/null)" ]; then
-            echo "⚠️ No test files found"
-            echo "tests_exist=false" >> $GITHUB_OUTPUT
+            echo "::warning::No *_test.dart files under test/ -- tests and the coverage gate are skipped."
+            echo "tests_exist=false" >> "$GITHUB_OUTPUT"
           else
-            echo "tests_exist=true" >> $GITHUB_OUTPUT
+            echo "tests_exist=true" >> "$GITHUB_OUTPUT"
           fi
 
-      ######################################################
-      # RUN TESTS
-      ######################################################
-
-      - name: Run Flutter Tests
+      # The test exit code IS the gate. The JUnit conversion and the summary
+      # still run on failure, then the step fails with flutter test's status.
+      - name: Run Flutter tests
         if: steps.check_tests.outputs.tests_exist == 'true'
         run: |
-          mkdir -p /tmp/test-results
-          mkdir -p /tmp/coverage
-          
-          flutter test \
-            --coverage \
-            --machine \
-            > /tmp/test-results/test-output.json || true
+          set -euo pipefail
+          mkdir -p build/reports
+          OUT=build/reports/test-output.json
 
-      ######################################################
-      # WARN IF TESTS MISSING
-      ######################################################
+          set +e
+          flutter test --coverage --machine > "$OUT"
+          STATUS=$?
+          set -e
 
-      - name: Warn if No Tests
-        if: steps.check_tests.outputs.tests_exist == 'false'
-        run: |
-          echo "⚠️ No tests detected in project"
-          echo "Pipeline will continue"
+          dart .pipeline/.github/tool/json_to_junit.dart < "$OUT" > build/reports/junit.xml || true
 
-      ######################################################
-      # GENERATE JUNIT
-      ######################################################
+          DONE=$(grep '"type":"testDone"' "$OUT" | grep '"hidden":false' || true)
+          TOTAL=$(printf '%s' "$DONE" | grep -c . || true)
+          PASSED=$(printf '%s' "$DONE" | grep -c '"result":"success"' || true)
+          echo "Tests: ${PASSED}/${TOTAL} passed" | tee build/reports/junit-summary.txt
 
-      - name: Generate JUnit Report
+          exit "$STATUS"
+
+      - name: Compute coverage and gate
+        id: coverage
         if: steps.check_tests.outputs.tests_exist == 'true'
+        env:
+          COVERAGE_EXCLUDE: ${{ inputs.coverage_exclude }}
+          COVERAGE_THRESHOLD: ${{ inputs.coverage_threshold }}
+          ENFORCE: ${{ inputs.enforce_coverage }}
         run: |
-          dart .github/tool/json_to_junit.dart \
-            /tmp/test-results/test-output.json \
-            /tmp/test-results/junit.xml
+          set -euo pipefail
+          LCOV=coverage/lcov.info
 
-      ######################################################
-      # COVERAGE HTML
-      ######################################################
-
-      - name: Generate Coverage HTML
-        if: steps.check_tests.outputs.tests_exist == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y lcov
-          genhtml coverage/lcov.info --output-directory /tmp/coverage/html || true
-
-      ######################################################
-      # COVERAGE THRESHOLD
-      ######################################################
-
-      - name: Enforce Coverage Threshold
-        if: ${{ inputs.enforce_coverage }}
-        run: |
-          if [ ! -f coverage/lcov.info ]; then
-            echo "⚠️ Coverage file not generated"
-            echo "Pipeline continuing"
-            exit 0
-          fi
-          
-          COVERAGE=$(lcov --summary coverage/lcov.info | grep lines | awk '{print $2}' | sed 's/%//')
-          REQUIRED=${{ inputs.coverage_threshold }}
-          
-          echo "Coverage: $COVERAGE%"
-          
-          if (( $(echo "$COVERAGE < $REQUIRED" | bc -l) )); then
-            echo "❌ Coverage below threshold ($REQUIRED%)"
+          if [ ! -f "$LCOV" ]; then
+            echo "::error::$LCOV was not generated"
             exit 1
           fi
 
-      ######################################################
-      # ARTIFACTS
-      ######################################################
+          # Count DA (line hit) records per source file, skipping excluded
+          # files. ENVIRON avoids awk -v mangling the regex backslashes.
+          PCT=$(awk '
+            /^SF:/ { ex = ENVIRON["COVERAGE_EXCLUDE"]; skip = (ex != "" && substr($0, 4) ~ ex) }
+            /^DA:/ && !skip { split(substr($0, 4), a, ","); total++; if (a[2] > 0) hit++ }
+            END { if (total == 0) print "0.00"; else printf "%.2f", hit / total * 100 }
+          ' "$LCOV")
 
-      - name: Upload Test Reports
-        if: steps.check_tests.outputs.tests_exist == 'true'
+          echo "coverage_percent=$PCT" >> "$GITHUB_OUTPUT"
+          echo "Line coverage: ${PCT}% (threshold ${COVERAGE_THRESHOLD}%)" | tee build/reports/coverage-summary.txt
+
+          if [ "$ENFORCE" = "true" ] && awk -v p="$PCT" -v th="$COVERAGE_THRESHOLD" 'BEGIN { exit !(p+0 < th+0) }'; then
+            echo "::error::Line coverage ${PCT}% is below threshold ${COVERAGE_THRESHOLD}%"
+            exit 1
+          fi
+
+      - name: Coverage HTML
+        if: ${{ always() && steps.check_tests.outputs.tests_exist == 'true' && runner.os == 'Linux' }}
+        continue-on-error: true
+        run: |
+          [ -f coverage/lcov.info ] || exit 0
+          sudo apt-get install -y -qq lcov > /dev/null
+          genhtml -q coverage/lcov.info --output-directory build/reports/coverage-html
+
+      - name: Upload test reports
+        if: ${{ always() && steps.check_tests.outputs.tests_exist == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
-          path: /tmp/test-results
+          path: |
+            build/reports/
+            coverage/lcov.info
+          if-no-files-found: ignore
+          retention-days: 14
 
-      - name: Upload Coverage Reports
-        if: steps.check_tests.outputs.tests_exist == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-reports
-          path: /tmp/coverage
-
-  ############################################################
-  # ANDROID BUILD
-  ############################################################
-
+  # =========================================================================
+  # 5. BUILD  (artifact contract consumed by release.yml -- do not rename)
+  # =========================================================================
   build_android:
-    name: Build Android
+    name: Build APK & AAB
     runs-on: ${{ inputs.android_runner }}
-    needs: dart_analyzer
+    needs: [test]
+    # Still build when tests are disabled by input, but never when they failed.
+    if: ${{ always() && inputs.run_build && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
 
     steps:
-      - uses: actions/checkout@v6
 
-      - name: Set Up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 17
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
+          install_java: "true"
+          java_version: ${{ inputs.java_version }}
+          fetch_pipeline: "false"
 
       - name: Build APK
-        run: flutter build apk --release --no-tree-shake-icons --build-name=${{ inputs.version_name }} --build-number=1
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          flutter build apk --release --no-tree-shake-icons \
+            --build-name="$VERSION_NAME" --build-number="$BUILD_NUMBER"
 
       - name: Build AAB
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
-          flutter build appbundle --release --build-name=${{ inputs.version_name }} --build-number=1
+          flutter build appbundle --release \
+            --build-name="$VERSION_NAME" --build-number="$BUILD_NUMBER"
 
-      - name: Upload Android Outputs
-        uses: actions/upload-artifact@v6
+      - name: Upload Android outputs
+        uses: actions/upload-artifact@v4
         with:
           name: android-build
           path: |
             build/app/outputs/flutter-apk/app-release.apk
             build/app/outputs/bundle/release/*.aab
-
-  ############################################################
-  # IOS BUILD
-  ############################################################
+          if-no-files-found: error
+          retention-days: 14
 
   build_ios:
-    name: Build iOS (UNSIGNED ARCHIVE)
+    name: Build iOS (unsigned archive)
     runs-on: ${{ inputs.ios_runner }}
-    needs: dart_analyzer
-    if: ${{ inputs.build_ios }}
+    needs: [test]
+    if: ${{ always() && inputs.build_ios && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
 
     steps:
-      - uses: actions/checkout@v6
 
-      - name: Validate Bundle ID
-        run: |
-          if [ -z "${{ inputs.ios_bundle_id }}" ]; then
-            echo "❌ ios_bundle_id required when build_ios=true"
-            exit 1
-          fi
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
         with:
           flutter_version: ${{ inputs.flutter_version }}
           flutter_channel: ${{ inputs.flutter_channel }}
+          fetch_pipeline: "false"
 
-      - name: Build iOS Archive
+      # One compile: `flutter build ipa --no-codesign` stops after the archive
+      # step and leaves build/ios/archive/Runner.xcarchive for release.yml.
+      - name: Build unsigned xcarchive
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
-          set -e
-          
-          ARCHIVE_DIR="$RUNNER_TEMP/ios-archive"
-          ARCHIVE_PATH="$ARCHIVE_DIR/Runner.xcarchive"
-          
-          mkdir -p "$ARCHIVE_DIR"
-          
-          flutter build ios --release --no-codesign
-          
-          cd ios
-          
-          xcodebuild \
-            -workspace Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -archivePath "$ARCHIVE_PATH" \
-            -sdk iphoneos \
-            CODE_SIGNING_ALLOWED=NO \
-            archive
-          
-          cd ..
-          
-          test -d "$ARCHIVE_PATH"
+          set -euo pipefail
+          flutter build ipa --release --no-codesign \
+            --build-name="$VERSION_NAME" --build-number="$BUILD_NUMBER"
+          test -d build/ios/archive/Runner.xcarchive
 
-      - name: Upload iOS Archive
-        uses: actions/upload-artifact@v6
+      - name: Upload iOS archive
+        uses: actions/upload-artifact@v4
         with:
           name: ios-archive-unsigned
-          path: ${{ runner.temp }}/ios-archive
+          path: build/ios/archive
+          if-no-files-found: error
+          retention-days: 14
+
+  # =========================================================================
+  # 6. SUMMARY
+  # =========================================================================
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [quality, security, dead_code, test, build_android, build_ios]
+    if: ${{ always() }}
+
+    steps:
+
+      - name: Checkout pipeline scripts
+        uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
+        with:
+          install_flutter: "false"
+          pub_get: "false"
+          pipeline_token: ${{ secrets.PIPELINE_TOKEN }}
+
+      # Reports only -- the build artifacts are large and not needed here.
+      - name: Download stage reports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: reports-*
+          path: reports
+
+      - name: Download test reports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: test-reports
+          path: reports/test-reports
+
+      - name: Compose job summary
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          DEAD_CODE_RESULT: ${{ needs.dead_code.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          BUILD_ANDROID_RESULT: ${{ needs.build_android.result }}
+          BUILD_IOS_RESULT: ${{ needs.build_ios.result }}
+          COVERAGE_PERCENT: ${{ needs.test.outputs.coverage_percent }}
+          COVERAGE_THRESHOLD: ${{ inputs.coverage_threshold }}
+        run: bash .pipeline/.github/tool/scripts/generate_summary_md.sh reports

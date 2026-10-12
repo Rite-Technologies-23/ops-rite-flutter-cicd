@@ -1,36 +1,31 @@
-name: "Reusable Flutter CD"
+name: "Flutter CD (Release) - Reusable"
+
+# ---------------------------------------------------------------------------
+# This workflow builds nothing. It signs and ships the artifacts the caller's
+# own CI job (push.yml) already produced earlier in the SAME workflow run --
+# reusable-workflow calls share one run, so plain actions/download-artifact
+# sees them. The caller must run push.yml first (`needs: [ci]`) with:
+#   run_build: true   -> android-build        (APK + AAB)
+#   build_ios: true   -> ios-archive-unsigned (Runner.xcarchive)
+# and the same version_name / build_number it wants to ship. See the README's
+# "Consolidated CI+CD build" section.
+# ---------------------------------------------------------------------------
 
 on:
   workflow_call:
     inputs:
-      flutter_version:
-        required: false
-        type: string
-        default: "3.35.5"
-
-      flutter_channel:
-        required: false
-        type: string
-        default: "stable"
-
       version:
         required: true
         type: string
+        description: "Semver (1.2.3) for the GitHub Release tag."
 
-      deploy_to_cloud:
-        required: false
-        type: boolean
-        default: false
-
-      enable_aws:
-        required: false
-        type: boolean
-        default: false
-
-      terraform_working_dir:
+      build_number:
         required: false
         type: string
-        default: './terraform'
+        default: "1"
+        description: >-
+          Informational only now -- the build number is baked in by push.yml.
+          Pass the same value you passed to push.yml.
 
       deploy_to_playstore:
         required: false
@@ -50,16 +45,6 @@ on:
       package_name:
         required: true
         type: string
-
-      playstore_metadata_path:
-        required: false
-        type: string
-        default: playstore/metadata
-
-      playstore_images_path:
-        required: false
-        type: string
-        default: playstore/images
 
       deploy_to_esper_android:
         required: false
@@ -89,12 +74,7 @@ on:
       ios_bundle_id:
         required: false
         type: string
-        default: ''
-
-      build_number:
-        required: false
-        type: string
-        default: '1'
+        default: ""
 
       enable_whats_new:
         required: false
@@ -104,7 +84,13 @@ on:
       whats_new_file:
         required: false
         type: string
-        default: ''
+        default: ""
+
+      android_build_tools_version:
+        required: false
+        type: string
+        default: "34.0.0"
+        description: "Build-tools version used by zipalign/apksigner when signing."
 
       android_runner:
         required: false
@@ -116,16 +102,46 @@ on:
         type: string
         default: macos-latest
 
-    secrets:
-      # AWS Secrets (optional)
-      AWS_ACCESS_KEY_ID:
+      # ---- unused, kept so existing callers don't break ----
+      # flutter_* are unused since this workflow stopped rebuilding the AAB;
+      # the cloud/AWS/metadata inputs were never wired to any job.
+      flutter_version:
         required: false
-      AWS_SECRET_ACCESS_KEY:
-        required: false
-      AWS_SESSION_TOKEN:
-        required: false
+        type: string
+        default: "3.35.5"
 
-      # Android Signing
+      flutter_channel:
+        required: false
+        type: string
+        default: "stable"
+
+      deploy_to_cloud:
+        required: false
+        type: boolean
+        default: false
+
+      enable_aws:
+        required: false
+        type: boolean
+        default: false
+
+      terraform_working_dir:
+        required: false
+        type: string
+        default: './terraform'
+
+      playstore_metadata_path:
+        required: false
+        type: string
+        default: playstore/metadata
+
+      playstore_images_path:
+        required: false
+        type: string
+        default: playstore/images
+
+    secrets:
+      # Android signing
       ANDROID_KEYSTORE:
         required: false
       KEYSTORE_PASSWORD:
@@ -137,7 +153,7 @@ on:
       PLAYSTORE_SERVICE_ACCOUNT:
         required: false
 
-      # iOS Signing
+      # iOS signing
       IOS_TEAM_ID:
         required: false
       IOS_CERT_P12_BASE64:
@@ -147,7 +163,7 @@ on:
       IOS_PROVISION_PROFILE_BASE64:
         required: false
 
-      # App Store Connect Credentials
+      # App Store Connect API
       APPSTORE_ISSUER_ID:
         required: false
       APPSTORE_KEY_ID:
@@ -155,40 +171,62 @@ on:
       APPSTORE_PRIVATE_KEY:
         required: false
 
-      # Esper Credentials
+      # Esper
       ESPER_API_KEY:
         required: false
 
+      # Unused. Kept for backward compatibility.
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      AWS_SESSION_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flutter-cd-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
+
+  # =========================================================================
   # CREATE GITHUB RELEASE
+  # =========================================================================
   create_release:
     name: Create GitHub Release
     runs-on: ${{ inputs.android_runner }}
+
+    permissions:
+      contents: write
+
     outputs:
       version: ${{ steps.version_check.outputs.version }}
+      tag: ${{ steps.version_check.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Download unsigned Android artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: android-build
-          path: release/android
-
-      - name: Download unsigned iOS archive
-        uses: actions/download-artifact@v4
-        with:
-          name: ios-archive-unsigned
-          path: release/ios
-
       - name: Determine next GitHub version
         id: version_check
+        env:
+          BASE_VERSION: ${{ inputs.version }}
         run: |
-          BASE_VERSION="${{ inputs.version }}"
+          set -euo pipefail
+
+          if ! [[ "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::inputs.version must be semver like 1.2.3 (got '$BASE_VERSION')"
+            exit 1
+          fi
+
           git fetch --tags
           CURRENT_VERSION="$BASE_VERSION"
 
@@ -198,21 +236,27 @@ jobs:
             CURRENT_VERSION="$major.$minor.$patch"
           done
 
-          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          if [ "$CURRENT_VERSION" != "$BASE_VERSION" ]; then
+            echo "::warning::Requested version $BASE_VERSION already has a tag; releasing as $CURRENT_VERSION instead. The binaries built by push.yml still carry the version_name/build_number they were built with -- they are NOT aware of this bump."
+          fi
+
+          echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: v${{ steps.version_check.outputs.version }}
-          name: Release v${{ steps.version_check.outputs.version }}
+          tag_name: ${{ steps.version_check.outputs.tag }}
+          name: Release ${{ steps.version_check.outputs.tag }}
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-  # SIGN ANDROID
+  # =========================================================================
+  # SIGN ANDROID  (re-signs the CI-built, debug-signed APK and AAB)
+  # =========================================================================
   sign_android:
     name: Sign Android
-    if: ${{ inputs.deploy_to_esper_android }}
+    if: ${{ inputs.deploy_to_playstore || inputs.deploy_to_esper_android }}
     needs: create_release
     runs-on: ${{ inputs.android_runner }}
 
@@ -221,167 +265,145 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: android-build
-          path: release/android
+          path: release/android/unsigned
 
-      - name: Install Android build-tools
-        uses: android-actions/setup-android@v3
+      - name: Install Android SDK tools
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
 
-      - name: Install Build Tools 34.0.0
+      - name: Install Build Tools
+        env:
+          BUILD_TOOLS_VERSION: ${{ inputs.android_build_tools_version }}
         run: |
           set -euo pipefail
-          sdkmanager "build-tools;34.0.0" "platform-tools" >/dev/null
-          echo "$ANDROID_SDK_ROOT/build-tools/34.0.0" >> "$GITHUB_PATH"
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-
-      - name: Verify tools
-        run: |
-          set -euo pipefail
-          which zipalign
-          which apksigner
-          zipalign -h | head -n 1
-          apksigner --version
+          sdkmanager "build-tools;${BUILD_TOOLS_VERSION}" "platform-tools" > /dev/null
+          echo "$ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}" >> "$GITHUB_PATH"
 
       - name: Decode keystore
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
         run: |
           set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE" ]; then
+            echo "::error::ANDROID_KEYSTORE secret is missing"
+            exit 1
+          fi
           mkdir -p /tmp/android
-          printf "%s" "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > /tmp/android/upload-keystore.jks
+          printf "%s" "$ANDROID_KEYSTORE" | base64 --decode > /tmp/android/upload-keystore.jks
 
+      # apksigner replaces any existing signature, so the debug-signed APK
+      # from CI can be signed directly.
       - name: Sign APK
+        env:
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
-  
-          APK=$(find release/android -name "*release*.apk" | head -n 1)
-  
+          mkdir -p release/android/signed
+
+          APK=$(find release/android/unsigned -name "*release*.apk" | head -n 1)
           if [ -z "$APK" ]; then
-            echo "❌ No release APK found under release/android"
+            echo "::error::No release APK found under release/android/unsigned"
             find release/android -maxdepth 6 -type f || true
             exit 1
           fi
-  
-          echo "Using APK: $APK"
-  
+
           zipalign -f 4 "$APK" /tmp/aligned.apk
-  
           apksigner sign \
             --ks /tmp/android/upload-keystore.jks \
-            --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
-            --ks-pass pass:"${{ secrets.KEYSTORE_PASSWORD }}" \
-            --key-pass pass:"${{ secrets.KEY_PASSWORD }}" \
-            --out release/android/app-release-signed.apk \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --key-pass "pass:$KEY_PASSWORD" \
+            --out release/android/signed/app-release-signed.apk \
             /tmp/aligned.apk
-  
-          echo "✅ APK signed"
 
-      - name: Verify signed APK
+          apksigner verify --verbose --print-certs release/android/signed/app-release-signed.apk
+
+      # Flutter's default release config signs with the debug key. jarsigner
+      # would ADD a second signer rather than replace it, so the old
+      # signature files are stripped first.
+      - name: Sign AAB
+        env:
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          apksigner verify --verbose --print-certs release/android/app-release-signed.apk
+
+          AAB=$(find release/android/unsigned -name "*.aab" | head -n 1)
+          if [ -z "$AAB" ]; then
+            echo "::error::No AAB found under release/android/unsigned"
+            exit 1
+          fi
+
+          OUT=release/android/signed/app-release-signed.aab
+          cp "$AAB" "$OUT"
+
+          # zip exits 12 when nothing matched (already unsigned) -- fine.
+          zip -q -d "$OUT" 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.EC' 'META-INF/*.DSA' 'META-INF/MANIFEST.MF' || [ $? -eq 12 ]
+
+          jarsigner \
+            -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore /tmp/android/upload-keystore.jks \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -keypass "$KEY_PASSWORD" \
+            "$OUT" \
+            "$KEY_ALIAS"
+
+          jarsigner -verify -certs "$OUT"
 
       - name: Upload signed Android artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: android-signed
-          path: release/android/app-release-signed.apk
+          path: release/android/signed/*
           if-no-files-found: error
 
-
+  # =========================================================================
   # DEPLOY TO PLAY STORE
+  # =========================================================================
   deploy_playstore:
     name: Deploy to Google Play Store
     if: ${{ inputs.deploy_to_playstore }}
-    needs: create_release
+    needs: sign_android
     runs-on: ${{ inputs.android_runner }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - name: Set up Java
-        uses: actions/setup-java@v5
+      - name: Download signed Android artifacts
+        uses: actions/download-artifact@v4
         with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Setup Flutter
-        uses: Rite-Technologies-23/ops-rite-flutter-cicd/.github/actions/setup-flutter@main
-        with:
-          flutter_version: ${{ inputs.flutter_version }}
-          flutter_channel: ${{ inputs.flutter_channel }}
-
-      - name: Decode Android keystore
-        run: |
-          set -euo pipefail
-          echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > android/upload-keystore.jks
-
-      - name: Create key.properties
-        run: |
-          set -euo pipefail
-          cat > android/key.properties <<EOF
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          storeFile=upload-keystore.jks
-          EOF
-  
-          echo "Generated android/key.properties"
-          cat android/key.properties | sed 's/=.*/=*** /g'
-
-      - name: Build signed release AAB
-        run: |
-          set -euo pipefail
-          flutter clean
-          flutter pub get
-          flutter build appbundle --release \
-            --build-name=${{ inputs.version }} \
-            --build-number=${{ inputs.build_number }}
-
-      - name: Verify signed AAB
-        run: |
-          set -euo pipefail
-          AAB=$(find build/app/outputs/bundle/release -name "*.aab" | head -n 1)
-  
-          if [ -z "$AAB" ]; then
-            echo "❌ No AAB found after build"
-            find build/app/outputs -maxdepth 6 -type f || true
-            exit 1
-          fi
-  
-          echo "Using AAB: $AAB"
-          jarsigner -verify -verbose -certs "$AAB"
+          name: android-signed
+          path: release/android
 
       - name: Prepare Play Store What's New
         if: ${{ inputs.enable_whats_new }}
+        env:
+          WHATS_NEW_FILE: ${{ inputs.whats_new_file }}
         run: |
           set -euo pipefail
-  
-          if [ -z "${{ inputs.whats_new_file }}" ]; then
-            echo "❌ whats_new_file not provided"
+          if [ -z "$WHATS_NEW_FILE" ] || [ ! -f "$WHATS_NEW_FILE" ]; then
+            echo "::error::whats_new_file missing or not found: '$WHATS_NEW_FILE'"
             exit 1
           fi
-  
-          if [ ! -f "${{ inputs.whats_new_file }}" ]; then
-            echo "❌ File not found: ${{ inputs.whats_new_file }}"
-            exit 1
-          fi
-  
-          LANG="en-US"
-          mkdir -p "$RUNNER_TEMP/whatsnew/${LANG}"
-          cp "${{ inputs.whats_new_file }}" "$RUNNER_TEMP/whatsnew/${LANG}/whatsnew"
-  
-          echo "✅ whatsNewDirectory prepared at: $RUNNER_TEMP/whatsnew"
+          mkdir -p "$RUNNER_TEMP/whatsnew/en-US"
+          cp "$WHATS_NEW_FILE" "$RUNNER_TEMP/whatsnew/en-US/whatsnew"
 
       - name: Upload to Google Play Store
-        uses: r0adkll/upload-google-play@v1
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAYSTORE_SERVICE_ACCOUNT }}
           packageName: ${{ inputs.package_name }}
-          releaseFiles: build/app/outputs/bundle/release/*.aab
+          releaseFiles: release/android/*.aab
           track: ${{ inputs.playstore_track }}
           status: ${{ inputs.playstore_status }}
           inAppUpdatePriority: 2
           whatsNewDirectory: ${{ inputs.enable_whats_new && format('{0}/whatsnew', runner.temp) || '' }}
 
+  # =========================================================================
   # SIGN iOS (EXPORT IPA FROM ARCHIVE)
+  # =========================================================================
   sign_ios:
     name: Sign iOS & Export IPA
     if: ${{ inputs.deploy_to_testflight || inputs.deploy_to_esper_ios }}
@@ -389,8 +411,6 @@ jobs:
     runs-on: ${{ inputs.ios_runner }}
 
     steps:
-      - uses: actions/checkout@v6
-
       - name: Download unsigned iOS archive
         uses: actions/download-artifact@v4
         with:
@@ -412,12 +432,11 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
 
-          # ✅ make Xcode/codesign actually search this keychain
+          # Make Xcode/codesign actually search this keychain
           security list-keychains -d user -s "$KEYCHAIN"
           security default-keychain -d user -s "$KEYCHAIN"
 
           echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-
           security import "$RUNNER_TEMP/cert.p12" \
             -k "$KEYCHAIN" \
             -P "$P12_PASSWORD" \
@@ -425,147 +444,115 @@ jobs:
             -T /usr/bin/security \
             -T /usr/bin/xcodebuild
 
-          # ✅ allow non-interactive signing
+          # Allow non-interactive signing
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" "$KEYCHAIN"
 
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           echo "$PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/profile.mobileprovision"
+          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$RUNNER_TEMP/profile.plist"
 
-          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< "$(security cms -D -i "$RUNNER_TEMP/profile.mobileprovision")")
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/profile.plist")
           cp "$RUNNER_TEMP/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
 
-          echo "✅ Installed provisioning profile UUID: $UUID"
+          echo "Installed provisioning profile:"
+          for KEY in Name UUID TeamIdentifier:0 Entitlements:application-identifier ProvisionsAllDevices; do
+            echo "  $KEY = $(/usr/libexec/PlistBuddy -c "Print :$KEY" "$RUNNER_TEMP/profile.plist" 2>/dev/null || echo '-')"
+          done
 
-          echo "🔎 Identities found:"
+          echo "Code signing identities:"
           security find-identity -p codesigning -v
-    
-
-      - name: Verify signing identities
-        run: |
-          set -e
-          echo "🔎 Available code signing identities:"
-          security find-identity -p codesigning -v
-          
-          echo "🔎 Keychains:"
-          security list-keychains -d user
-          
-          echo "🔎 Default keychain:"
-          security default-keychain -d user
-
-      - name: Inspect provisioning profile
-        run: |
-          set -e
-          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$RUNNER_TEMP/profile.plist"
-          /usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/profile.plist" || true
-          /usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/profile.plist" || true
-          /usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$RUNNER_TEMP/profile.plist" || true
-          /usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist" || true
-          /usr/libexec/PlistBuddy -c 'Print :ProvisionsAllDevices' "$RUNNER_TEMP/profile.plist" || true
-          /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$RUNNER_TEMP/profile.plist" || true
 
       - name: Generate ExportOptions.plist
+        env:
+          TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          BUNDLE_ID: ${{ inputs.ios_bundle_id }}
+          TO_TESTFLIGHT: ${{ inputs.deploy_to_testflight }}
         run: |
-          set -e
+          set -euo pipefail
 
-          if [ -z "${{ inputs.ios_bundle_id }}" ]; then
-            echo "❌ inputs.ios_bundle_id required for iOS export"
+          if [ -z "$BUNDLE_ID" ]; then
+            echo "::error::inputs.ios_bundle_id is required for iOS export"
+            exit 1
+          fi
+          if [ -z "$TEAM_ID" ]; then
+            echo "::error::IOS_TEAM_ID is required for manual signing"
             exit 1
           fi
 
-          if [ -z "${{ secrets.IOS_TEAM_ID }}" ]; then
-            echo "❌ IOS_TEAM_ID required for manual signing"
-            exit 1
-          fi
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/profile.plist")
 
-          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin <<< "$(security cms -D -i "$RUNNER_TEMP/profile.mobileprovision")")
-
-          # Decide export method based on target
-          if [ "${{ inputs.deploy_to_testflight }}" = "true" ]; then
+          if [ "$TO_TESTFLIGHT" = "true" ]; then
             EXPORT_METHOD="app-store-connect"
-          elif [ "${{ inputs.deploy_to_esper_ios }}" = "true" ]; then
-            # Change to ad-hoc if your provisioning profile is ad hoc rather than enterprise
-            EXPORT_METHOD="enterprise"
           else
-            echo "❌ No valid iOS export target enabled"
-            exit 1
+            # Esper only. Change to ad-hoc if your profile is ad hoc rather than enterprise.
+            EXPORT_METHOD="enterprise"
           fi
 
-          echo "Using export method: $EXPORT_METHOD"
-          echo "Using provisioning profile: $PROFILE_NAME"
+          echo "Export method: $EXPORT_METHOD, profile: $PROFILE_NAME"
 
-          cat > ios/ExportOptions.plist <<EOF
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>method</key>
             <string>${EXPORT_METHOD}</string>
-
             <key>signingStyle</key>
             <string>manual</string>
-
             <key>teamID</key>
-            <string>${{ secrets.IOS_TEAM_ID }}</string>
-
+            <string>${TEAM_ID}</string>
             <key>provisioningProfiles</key>
             <dict>
-              <key>${{ inputs.ios_bundle_id }}</key>
+              <key>${BUNDLE_ID}</key>
               <string>${PROFILE_NAME}</string>
             </dict>
-
             <key>compileBitcode</key>
             <false/>
-
             <key>stripSwiftSymbols</key>
             <true/>
           </dict>
           </plist>
           EOF
 
-          echo "Generated ExportOptions.plist:"
-          cat ios/ExportOptions.plist
+          cat "$RUNNER_TEMP/ExportOptions.plist"
 
       - name: Export IPA
         run: |
-          set -e
-
-          echo "Listing release/ios:"
-          ls -la release/ios || true
-          find release/ios -maxdepth 5 -print || true
+          set -euo pipefail
 
           ARCHIVE=$(find release/ios -type d -name "*.xcarchive" | head -n 1)
-
           if [ -z "$ARCHIVE" ]; then
-            echo "No .xcarchive directory found in release/ios"
+            echo "::error::No .xcarchive found in release/ios"
+            find release/ios -maxdepth 5 -print || true
             exit 1
           fi
 
           echo "Using archive: $ARCHIVE"
-
           xcodebuild -exportArchive \
             -archivePath "$ARCHIVE" \
             -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist ios/ExportOptions.plist
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
 
       - name: Verify embedded.mobileprovision exists
         run: |
-          set -e
+          set -euo pipefail
           IPA=$(find "$RUNNER_TEMP/export" -name "*.ipa" | head -n 1)
-          rm -rf /tmp/ipa_check
-          mkdir -p /tmp/ipa_check
+          rm -rf /tmp/ipa_check && mkdir -p /tmp/ipa_check
           unzip -q "$IPA" -d /tmp/ipa_check
           APP=$(find /tmp/ipa_check/Payload -maxdepth 1 -name "*.app" | head -n 1)
-          test -f "$APP/embedded.mobileprovision" || (echo "❌ embedded.mobileprovision missing"; exit 1)
-          echo "✅ embedded.mobileprovision found"
-
+          test -f "$APP/embedded.mobileprovision" || { echo "::error::embedded.mobileprovision missing"; exit 1; }
+          echo "embedded.mobileprovision found"
 
       - name: Upload signed IPA
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: ios-ipa-signed
           path: ${{ runner.temp }}/export/*.ipa
+          if-no-files-found: error
 
+  # =========================================================================
   # DEPLOY TO TESTFLIGHT
+  # =========================================================================
   deploy_testflight:
     name: Deploy to TestFlight
     if: ${{ inputs.deploy_to_testflight }}
@@ -573,7 +560,7 @@ jobs:
     runs-on: ${{ inputs.ios_runner }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Download signed IPA
         uses: actions/download-artifact@v4
@@ -581,50 +568,38 @@ jobs:
           name: ios-ipa-signed
           path: release/ios
 
-      # ✅ Pin Ruby (avoid /opt/homebrew Ruby/OpenSSL issues)
+      # Pin Ruby (avoids /opt/homebrew Ruby/OpenSSL issues)
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.2"   # 3.2 is very stable with fastlane
+          ruby-version: "3.2"
           bundler-cache: false
 
       - name: Install fastlane
         run: gem install fastlane -N
-
-      # (Optional) print versions for debugging
-      - name: Debug Ruby/OpenSSL/Fastlane
-        run: |
-          ruby -v
-          which ruby
-          ruby -ropenssl -e 'puts OpenSSL::OPENSSL_VERSION'
-          fastlane --version
 
       - name: Upload to TestFlight
         env:
           APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
           APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
           APPSTORE_PRIVATE_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+          ENABLE_WHATS_NEW: ${{ inputs.enable_whats_new }}
+          WHATS_NEW_FILE: ${{ inputs.whats_new_file }}
         run: |
-          set -e
+          set -euo pipefail
 
           IPA=$(find release/ios -name "*.ipa" | head -n 1)
           if [ -z "$IPA" ]; then
-            echo "❌ No IPA found in release/ios"
-            find release/ios -maxdepth 6 -type f
+            echo "::error::No IPA found in release/ios"
             exit 1
           fi
 
-          echo "$APPSTORE_PRIVATE_KEY" | base64 --decode > AuthKey.p8
-          perl -pi -e 's/\r\n/\n/g' AuthKey.p8
+          echo "$APPSTORE_PRIVATE_KEY" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          perl -pi -e 's/\r\n/\n/g' "$RUNNER_TEMP/AuthKey.p8"
 
-          KEY_ESCAPED=$(python3 - <<'PY'
-          import json
-          p = open("AuthKey.p8", "r", encoding="utf-8").read()
-          print(json.dumps(p)[1:-1])
-          PY
-          )
+          KEY_ESCAPED=$(python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1], encoding="utf-8").read())[1:-1])' "$RUNNER_TEMP/AuthKey.p8")
 
-          cat > api_key.json <<EOF
+          cat > "$RUNNER_TEMP/api_key.json" <<EOF
           {
             "key_id": "${APPSTORE_KEY_ID}",
             "issuer_id": "${APPSTORE_ISSUER_ID}",
@@ -633,40 +608,22 @@ jobs:
           }
           EOF
 
-          CHANGELOG=""
-          if [ "${{ inputs.enable_whats_new }}" = "true" ]; then
-            if [ -z "${{ inputs.whats_new_file }}" ]; then
-              echo "❌ whats_new_file not provided"
+          ARGS=(--ipa "$IPA" --api_key_path "$RUNNER_TEMP/api_key.json" --skip_waiting_for_build_processing true)
+
+          if [ "$ENABLE_WHATS_NEW" = "true" ]; then
+            if [ -z "$WHATS_NEW_FILE" ] || [ ! -f "$WHATS_NEW_FILE" ]; then
+              echo "::error::whats_new_file missing or not found: '$WHATS_NEW_FILE'"
               exit 1
             fi
-            if [ ! -f "${{ inputs.whats_new_file }}" ]; then
-              echo "❌ File not found: ${{ inputs.whats_new_file }}"
-              exit 1
-            fi
-            CHANGELOG="$(cat "${{ inputs.whats_new_file }}")"
+            ARGS+=(--changelog "$(cat "$WHATS_NEW_FILE")")
           fi
 
-          # ✅ IMPORTANT:
-          # Use --distribute_external for external testers (optional)
           # For internal testers, groups must exist in App Store Connect.
-          #
-          # If your group name is different, change "Internal" to your group name.
-          #GROUP_NAME="Internal"
+          fastlane pilot upload "${ARGS[@]}"
 
-          if [ -n "$CHANGELOG" ]; then
-            fastlane pilot upload \
-              --ipa "$IPA" \
-              --api_key_path api_key.json \
-              --skip_waiting_for_build_processing true \
-              --changelog "$CHANGELOG"
-          else
-            fastlane pilot upload \
-              --ipa "$IPA" \
-              --api_key_path api_key.json \
-              --skip_waiting_for_build_processing true
-          fi
-
-
+  # =========================================================================
+  # DEPLOY TO ESPER
+  # =========================================================================
   deploy_esper_android:
     name: Deploy Android to Esper
     if: ${{ inputs.deploy_to_esper_android }}
@@ -674,47 +631,31 @@ jobs:
     runs-on: ${{ inputs.android_runner }}
 
     steps:
-      # Download signed Android APK
-      - name: Download signed Android APK
+      - name: Download signed Android artifacts
         uses: actions/download-artifact@v4
         with:
           name: android-signed
           path: release/android
 
-      # Check Esper credentials
-      - name: Check Esper credentials
-        env:
-          ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
-          ESPER_ORG_ID: ${{ inputs.esper_org_id }}
-          ESPER_TENANT: ${{ inputs.esper_tenant }}
-        run: |
-          set -euo pipefail
-          if [ -z "${ESPER_API_KEY}" ]; then
-            echo "❌ ESPER_API_KEY is missing"
-            exit 1
-          fi
-          if [ -z "${ESPER_TENANT}" ]; then
-            echo "❌ esper_tenant input is missing"
-            exit 1
-          fi
-          echo "✅ Esper credentials look present"
-
-      # Deploy Android to Esper
       - name: Deploy Android to Esper
         env:
           ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
           ESPER_ORG_ID: ${{ inputs.esper_org_id }}
           ESPER_TENANT: ${{ inputs.esper_tenant }}
-          APK_PATH: ${{ steps.artifact_check.outputs.android_apk }}
         run: |
           set -euo pipefail
-          
-          APK=$(find release/android -name "*.apk" | head -n 1)
-          if [ -z "$APK" ]; then
-            echo "❌ No signed APK found"
+
+          if [ -z "$ESPER_API_KEY" ] || [ -z "$ESPER_TENANT" ]; then
+            echo "::error::ESPER_API_KEY secret and esper_tenant input are required"
             exit 1
           fi
-          
+
+          APK=$(find release/android -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "::error::No signed APK found"
+            exit 1
+          fi
+
           API_URL="https://${ESPER_TENANT}-api.esper.cloud/api/enterprise/${ESPER_ORG_ID}/application/upload/"
           echo "Uploading Android APK: $APK"
           HTTP_STATUS=$(curl -L -sS -w "%{http_code}" \
@@ -723,19 +664,15 @@ jobs:
             -H "Accept: application/json" \
             -F "app_file=@${APK}" \
             -o esper_android_response.json)
-          
-          echo "Esper Android response:"
+
           cat esper_android_response.json || true
           echo "HTTP Status: $HTTP_STATUS"
-          
+
           if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
-            echo "❌ Esper Android upload failed"
+            echo "::error::Esper Android upload failed"
             exit 1
           fi
-          
-          echo "✅ Esper Android upload successful"
 
-  # Deploy iOS to Esper
   deploy_esper_ios:
     name: Deploy iOS to Esper
     if: ${{ inputs.deploy_to_esper_ios }}
@@ -743,44 +680,27 @@ jobs:
     runs-on: ${{ inputs.ios_runner }}
 
     steps:
-      # Download signed iOS IPA
       - name: Download signed iOS IPA
         uses: actions/download-artifact@v4
         with:
           name: ios-ipa-signed
           path: release/ios
 
-      # Check Esper credentials
-      - name: Check Esper credentials
-        env:
-          ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
-          ESPER_ORG_ID: ${{ inputs.esper_org_id }}
-          ESPER_TENANT: ${{ inputs.esper_tenant }}
-        run: |
-          set -euo pipefail
-          if [ -z "${ESPER_API_KEY}" ]; then
-            echo "❌ ESPER_API_KEY is missing"
-            exit 1
-          fi
-          if [ -z "${ESPER_TENANT}" ]; then
-            echo "❌ esper_tenant input is missing"
-            exit 1
-          fi
-          echo "✅ Esper credentials look present"
-
-      # Deploy iOS to Esper
       - name: Deploy iOS to Esper
         env:
           ESPER_API_KEY: ${{ secrets.ESPER_API_KEY }}
-          ESPER_ORG_ID: ${{ inputs.esper_org_id }}
           ESPER_TENANT: ${{ inputs.esper_tenant }}
-          IOS_IPA_PATH: ${{ steps.artifact_check.outputs.ios_ipa }}
         run: |
           set -euo pipefail
 
+          if [ -z "$ESPER_API_KEY" ] || [ -z "$ESPER_TENANT" ]; then
+            echo "::error::ESPER_API_KEY secret and esper_tenant input are required"
+            exit 1
+          fi
+
           IPA=$(find release/ios -name "*.ipa" | head -n 1)
           if [ -z "$IPA" ]; then
-            echo "❌ No signed IPA found"
+            echo "::error::No signed IPA found"
             exit 1
           fi
 
@@ -794,13 +714,52 @@ jobs:
             -F "file=@${IPA}" \
             -o esper_ios_response.json)
 
-          echo "Esper iOS response:"
           cat esper_ios_response.json || true
           echo "HTTP Status: $HTTP_STATUS"
 
           if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
-            echo "❌ Esper iOS upload failed"
+            echo "::error::Esper iOS upload failed"
             exit 1
           fi
 
-          echo "✅ Esper iOS upload successful"
+  # =========================================================================
+  # ATTACH SIGNED ARTIFACTS TO THE GITHUB RELEASE
+  # =========================================================================
+  upload_to_release:
+    name: Upload artifacts to GitHub Release
+    needs: [create_release, sign_android, sign_ios]
+    if: ${{ always() && needs.create_release.result == 'success' && (needs.sign_android.result == 'success' || needs.sign_ios.result == 'success') }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download signed Android artifacts
+        if: ${{ needs.sign_android.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: android-signed
+          path: dist
+
+      - name: Download signed IPA
+        if: ${{ needs.sign_ios.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-ipa-signed
+          path: dist
+
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.create_release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' FILES < <(find dist \( -name "*.apk" -o -name "*.aab" -o -name "*.ipa" \) -print0)
+
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::No signed artifacts found in dist"
+            exit 1
+          fi
+
+          gh release upload "$TAG" "${FILES[@]}" --clobber --repo "$GITHUB_REPOSITORY"

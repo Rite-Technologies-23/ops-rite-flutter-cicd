@@ -1,55 +1,45 @@
+import 'dart:convert';
 import 'dart:io';
 
-
-void main() async {
-  final inputFile = File('analyzer-report.txt');
-  final outputFile = File('analyzer-report.html');
+/// Converts `dart analyze --format=machine` output into an HTML table.
+///
+/// Usage: dart analyzer_to_html.dart [input.txt] [output.html]
+/// Machine lines: SEVERITY|TYPE|CODE|FILE|LINE|COL|LENGTH|MESSAGE
+void main(List<String> args) async {
+  final inputFile = File(args.isNotEmpty ? args[0] : 'analyzer-report.txt');
+  final outputFile = File(args.length > 1 ? args[1] : 'analyzer-report.html');
 
   if (!inputFile.existsSync()) {
-    print("❌ analyzer-report.txt not found.");
+    stderr.writeln('${inputFile.path} not found.');
     exit(1);
   }
 
-  final lines = await inputFile.readAsLines();
+  const esc = HtmlEscape();
+  final rows = StringBuffer();
 
-  final buffer = StringBuffer();
-  buffer.writeln('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Dart Analyzer Report</title>');
-  buffer.writeln('<style>');
-  buffer.writeln('body { font-family: Arial, sans-serif; padding: 20px; }');
-  buffer.writeln('table { border-collapse: collapse; width: 100%; }');
-  buffer.writeln('th, td { border: 1px solid #ddd; padding: 8px; }');
-  buffer.writeln('th { background-color: #f2f2f2; }');
-  buffer.writeln('.warning { color: #d97706; }');
-  buffer.writeln('.info { color: #2563eb; }');
-  buffer.writeln('</style></head><body>');
-  buffer.writeln('<h1>Dart Analyzer Report</h1>');
-  buffer.writeln('<table><thead><tr><th>Severity</th><th>File</th><th>Line</th><th>Column</th><th>Message</th></tr></thead><tbody>');
-
-  final regex = RegExp(r'^(warning|info) - (.*?):(\d+):(\d+) - (.*?) -');
-
-  for (var line in lines) {
-    final match = regex.firstMatch(line);
-    if (match != null) {
-      final severity = match.group(1);
-      final file = match.group(2);
-      final lineNo = match.group(3);
-      final column = match.group(4);
-      final message = match.group(5);
-
-      buffer.writeln(
-        '<tr>'
-        '<td class="$severity">$severity</td>'
-        '<td>$file</td>'
-        '<td>$lineNo</td>'
-        '<td>$column</td>'
-        '<td>$message</td>'
-        '</tr>',
-      );
-    }
+  for (final line in await inputFile.readAsLines()) {
+    final f = line.split('|');
+    if (f.length < 8) continue;
+    final severity = f[0].toLowerCase();
+    final message = f.sublist(7).join('|');
+    rows.writeln('<tr><td class="$severity">$severity</td>'
+        '<td>${esc.convert(f[3])}</td><td>${f[4]}</td><td>${f[5]}</td>'
+        '<td>${esc.convert(message)}</td><td>${esc.convert(f[2].toLowerCase())}</td></tr>');
   }
 
-  buffer.writeln('</tbody></table></body></html>');
-  await outputFile.writeAsString(buffer.toString());
+  await outputFile.writeAsString('''
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Dart Analyzer Report</title>
+<style>
+body { font-family: Arial, sans-serif; padding: 20px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #ddd; padding: 8px; }
+th { background-color: #f2f2f2; }
+.error { color: #dc2626; } .warning { color: #d97706; } .info { color: #2563eb; }
+</style></head><body>
+<h1>Dart Analyzer Report</h1>
+<table><thead><tr><th>Severity</th><th>File</th><th>Line</th><th>Column</th><th>Message</th><th>Code</th></tr></thead><tbody>
+$rows</tbody></table></body></html>
+''');
 
-  print("✅ analyzer-report.html generated successfully.");
+  print('${outputFile.path} generated.');
 }

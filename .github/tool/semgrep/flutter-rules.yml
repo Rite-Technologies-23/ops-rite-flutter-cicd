@@ -1,0 +1,58 @@
+# Flutter/Dart SAST rules. Semgrep's Dart support is experimental and the
+# registry has no Dart pack, so these cover the common mobile mistakes.
+rules:
+
+  - id: dart-insecure-http-url
+    languages: [dart]
+    severity: WARNING
+    message: Cleartext http:// URL. Use https:// (Android 9+ and iOS ATS block cleartext by default).
+    pattern-regex: '[''"]http://(?!localhost|127\.0\.0\.1|10\.0\.2\.2)[^''"]+[''"]'
+
+  - id: dart-trust-all-certificates
+    languages: [dart]
+    severity: ERROR
+    message: badCertificateCallback returns true, which disables TLS certificate validation (MITM risk).
+    pattern-either:
+      - pattern: |
+          $C.badCertificateCallback = ($...ARGS) => true;
+      - pattern: |
+          $C.badCertificateCallback = ($...ARGS) { return true; };
+
+  - id: dart-secret-in-shared-preferences
+    languages: [dart]
+    severity: ERROR
+    message: Credential stored in SharedPreferences (plain text on disk). Use flutter_secure_storage.
+    patterns:
+      - pattern: $PREFS.setString($KEY, ...)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i).*(password|passwd|secret|token|api_?key|pin).*
+
+  - id: dart-logging-sensitive-data
+    languages: [dart]
+    severity: WARNING
+    message: Possible credential written to logs. Logs are readable via adb logcat / device console.
+    patterns:
+      - pattern-either:
+          - pattern: print($MSG)
+          - pattern: debugPrint($MSG)
+          - pattern: log($MSG, ...)
+      - metavariable-regex:
+          metavariable: $MSG
+          regex: (?i).*(password|passwd|secret|token|api_?key).*
+
+  - id: dart-weak-hash
+    languages: [dart]
+    severity: WARNING
+    message: MD5/SHA-1 are broken for security purposes. Use SHA-256 or stronger.
+    pattern-either:
+      - pattern: md5.convert(...)
+      - pattern: sha1.convert(...)
+
+  - id: dart-insecure-random
+    languages: [dart]
+    severity: WARNING
+    message: Random() is not cryptographically secure. Use Random.secure() for tokens, nonces and keys.
+    patterns:
+      - pattern: Random()
+      - pattern-not: Random.secure()

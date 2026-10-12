@@ -50,6 +50,8 @@ void main() async {
         break;
 
       case 'testDone':
+        // Hidden tests are the runner's own "loading <file>" pseudo-tests.
+        if (e['hidden'] == true) break;
         final id = e['testID'];
         final meta = testMetadata[id];
         if (meta != null) {

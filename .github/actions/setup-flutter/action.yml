@@ -1,33 +1,112 @@
-name: Setup Flutter and Dart Utilities
-description: Sets up Flutter SDK and fetches reusable Dart tooling scripts
+name: "Setup Flutter Build Environment"
+description: >-
+  Shared setup for every CI job: resolves and checks out the pipeline repo (for
+  tool configs and scripts) into .pipeline, optionally installs the JDK, installs
+  the Flutter SDK with caching and runs `flutter pub get`.
 
 inputs:
   flutter_version:
-    required: true
-    description: The version of Flutter to install
+    required: false
     default: "3.35.5"
+    description: "Flutter version to install"
+
   flutter_channel:
-    required: true
-    description: The Flutter release channel to use
+    required: false
     default: "stable"
+    description: "Flutter release channel"
+
+  install_flutter:
+    required: false
+    default: "true"
+    description: "Install the Flutter SDK. Off for jobs that only need .pipeline (security, summary)."
+
+  install_java:
+    required: false
+    default: "false"
+    description: "Install a JDK. Only the Android build job needs one."
+
+  java_version:
+    required: false
+    default: "17"
+    description: "JDK version when install_java is true"
+
+  fetch_pipeline:
+    required: false
+    default: "true"
+    description: "Check out this pipeline repo into .pipeline for tool configs and scripts"
+
+  pipeline_token:
+    required: false
+    default: ""
+    description: >-
+      Token used to check out the pipeline repo. Only needed when the pipeline
+      repo is PRIVATE and the caller lives in a different repo -- the default
+      GITHUB_TOKEN is scoped to the caller repo and will 403.
+
+  pub_get:
+    required: false
+    default: "true"
+    description: "Run `flutter pub get` after installing the SDK"
+
+outputs:
+  pipeline_dir:
+    description: "Directory the pipeline repo was checked out into"
+    value: ${{ steps.resolve.outputs.dir }}
 
 runs:
   using: "composite"
   steps:
-    - name: Setup Flutter
+
+    # ----------------------------------------------------------------------
+    # Resolve which pipeline repo/ref this action came from. Same mechanism as
+    # ops-rite-android-pipeline's setup-android: github.repository and
+    # github.workflow_ref are the CALLER inside a reusable workflow, but
+    # github.action_repository / github.action_ref reflect this action's own
+    # `uses:` line -- only reliably when captured via `env:` on the step.
+    # Both are empty for a local `uses: ./...`, where the current checkout
+    # already is the pipeline repo.
+    # ----------------------------------------------------------------------
+    - name: Resolve pipeline source
+      id: resolve
+      shell: bash
+      env:
+        ACTION_REPO: ${{ github.action_repository }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        PIPELINE_REPO="${ACTION_REPO:-$GITHUB_REPOSITORY}"
+        PIPELINE_REF="${ACTION_REF:-$GITHUB_SHA}"
+        echo "repo=$PIPELINE_REPO" >> "$GITHUB_OUTPUT"
+        echo "ref=$PIPELINE_REF"   >> "$GITHUB_OUTPUT"
+        echo "dir=.pipeline"       >> "$GITHUB_OUTPUT"
+        echo "Pipeline source: $PIPELINE_REPO@$PIPELINE_REF"
+
+    - name: Checkout pipeline repo
+      if: ${{ inputs.fetch_pipeline == 'true' }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ steps.resolve.outputs.repo }}
+        ref: ${{ steps.resolve.outputs.ref }}
+        path: ${{ steps.resolve.outputs.dir }}
+        token: ${{ inputs.pipeline_token != '' && inputs.pipeline_token || github.token }}
+        persist-credentials: false
+
+    - name: Install Java (Temurin)
+      if: ${{ inputs.install_java == 'true' }}
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java_version }}
+
+    - name: Install Flutter
+      if: ${{ inputs.install_flutter == 'true' }}
       uses: subosito/flutter-action@v2
       with:
         flutter-version: ${{ inputs.flutter_version }}
         channel: ${{ inputs.flutter_channel }}
+        cache: true
 
-    - name: Flutter Pub Get
+    - name: Flutter pub get
+      if: ${{ inputs.install_flutter == 'true' && inputs.pub_get == 'true' }}
       shell: bash
       run: flutter pub get
-
-    - name: Fetch Dart Utility Scripts from reusable-repo-flutter
-      shell: bash
-      run: |
-        mkdir -p .github/tool
-        curl -sSL https://raw.githubusercontent.com/Darryl-Cardoza/flutter-reusable-repo/main/.github/tool/analyzer_to_html.dart -o .github/tool/analyzer_to_html.dart
-        curl -sSL https://raw.githubusercontent.com/Darryl-Cardoza/flutter-reusable-repo/main/.github/tool/json_to_junit.dart -o .github/tool/json_to_junit.dart
-        curl -sSL https://raw.githubusercontent.com/Darryl-Cardoza/flutter-reusable-repo/main/.github/tool/run_filtered_tests.dart -o .github/tool/run_filtered_tests.dart
